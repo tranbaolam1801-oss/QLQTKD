@@ -9,7 +9,9 @@ Hệ thống quản lý quy trình tiếp nhận, xét duyệt và cấp phép t
 ```text
 eventflow/
 └── database/
-    ├── schema.sql                   # Mã nguồn tạo toàn bộ 23 bảng, khóa ngoại, chỉ mục & ràng buộc
+    ├── MY_DUE_QLSK_PostgreSQL_ALL_IN_ONE.sql # PostgreSQL: schema, RBAC, dữ liệu, hàm và trigger
+    ├── POSTGRESQL_ACCOUNT_REGISTRATION.sql  # PostgreSQL: bảng User và token khôi phục cho backend hiện tại
+    ├── schema.sql                   # Schema SQL Server
     ├── rbac_permissions_matrix.sql  # Danh mục 6 vai trò, 30+ quyền hạn & ma trận ánh xạ quyền
     ├── seed_data.sql                # Dữ liệu mẫu khởi tạo: 13 tài khoản DUE, 6 hội trường, 5 thiết bị
     └── README.md                    # Tài liệu đặc tả cơ sở dữ liệu và hướng dẫn vận hành
@@ -110,27 +112,34 @@ Hệ thống phân quyền theo mô hình **Role-Based Access Control (RBAC)** v
 
 ## 5. Hướng dẫn Chạy File SQL Trực tiếp
 
-### Cách A: Nạp vào PostgreSQL
-```bash
-# Tạo cơ sở dữ liệu
-createdb -U postgres eventflow_db
+### PostgreSQL / Supabase
 
-# Nạp bảng và phân quyền
-psql -U postgres -d eventflow_db -f database/schema.sql
-psql -U postgres -d eventflow_db -f database/rbac_permissions_matrix.sql
-psql -U postgres -d eventflow_db -f database/seed_data.sql
+Kết nối tới một database PostgreSQL trống (Supabase đã tạo sẵn database), sau đó chạy **một file tổng hợp**:
+
+```bash
+psql -U postgres -d MY_DUE_QLSK -v ON_ERROR_STOP=1 -f database/MY_DUE_QLSK_PostgreSQL_ALL_IN_ONE.sql
 ```
 
-### Cách B: Nạp vào SQLite (Đang dùng trong Backend dự án)
+File này bao gồm bảng, khóa ngoại, chỉ mục, dữ liệu danh mục, vai trò/quyền RBAC, tài khoản demo bị vô hiệu hóa, view, hàm và trigger. Chạy trên database mới; không chạy đè lên database production nếu chưa sao lưu và rà soát.
+
+> Đây là bản PostgreSQL chuyển đổi của schema `MY_DUE_QLSK` (các bảng `public."Users"`, `public."Events"`). Backend hiện tại dùng Prisma với schema riêng; chạy file này **không tự chuyển cấu hình backend** sang PostgreSQL.
+
+#### Bổ sung bảng tài khoản cho backend Prisma hiện tại
+
+Nếu đang dùng backend hiện tại trên Render, luồng đăng ký cần các bảng `"my_due"."User"` và `"my_due"."PasswordResetToken"`, không phải bảng legacy `public."Users"`. Có thể chạy migration cộng thêm sau trên đúng Supabase project:
+
 ```bash
-sqlite3 backend/dev.db < database/schema.sql
-sqlite3 backend/dev.db < database/rbac_permissions_matrix.sql
-sqlite3 backend/dev.db < database/seed_data.sql
+psql -U postgres -d MY_DUE_QLSK -v ON_ERROR_STOP=1 -f database/POSTGRESQL_ACCOUNT_REGISTRATION.sql
 ```
 
-### Cách C: Sử dụng Prisma ORM có sẵn trong Backend
+File này tạo cấu trúc khớp với `backend/prisma/schema.postgresql.prisma`, bao gồm email duy nhất không phân biệt chữ hoa/thường, hash mật khẩu và dữ liệu khóa đăng nhập. Nó chỉ bổ sung hai bảng xác thực; các API sự kiện/nghiệp vụ vẫn cần đầy đủ schema `my_due` trước khi bật `POSTGRES_CUTOVER_APPROVED=true` trên Render. Sao lưu và kiểm tra database trước khi chạy trên production.
+
+### Backend Prisma (SQLite hiện tại)
+
 ```bash
 cd backend
 npx prisma db push
 npx tsx prisma/seed.ts
 ```
+
+Không nạp `schema.sql` (SQL Server) vào SQLite.

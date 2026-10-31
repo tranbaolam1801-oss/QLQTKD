@@ -11,10 +11,40 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
     return;
   }
 
-  const token = authHeader.split(' ')[1];
-  try {
-    const decoded = jwt.verify(token, config.jwtSecret) as JwtPayload;
+  const token = authHeader.slice('Bearer '.length).trim();
+  if (!token) {
+    res.status(401).json({ success: false, error: 'Chưa đăng nhập hoặc token không hợp lệ' });
+    return;
+  }
 
+  let decoded: JwtPayload;
+  try {
+    const payload = jwt.verify(token, config.jwtSecret);
+    if (
+      typeof payload !== 'object' ||
+      payload === null ||
+      typeof payload.userId !== 'string' ||
+      typeof payload.email !== 'string' ||
+      typeof payload.fullName !== 'string'
+    ) {
+      res.status(401).json({ success: false, error: 'Token hết hạn hoặc không hợp lệ' });
+      return;
+    }
+    decoded = payload as JwtPayload;
+  } catch (error) {
+    if (error instanceof jwt.TokenExpiredError) {
+      res.status(401).json({ success: false, error: 'Token đã hết hạn, vui lòng đăng nhập lại' });
+      return;
+    }
+    if (error instanceof jwt.JsonWebTokenError || error instanceof jwt.NotBeforeError) {
+      res.status(401).json({ success: false, error: 'Token hết hạn hoặc không hợp lệ' });
+      return;
+    }
+    next(error);
+    return;
+  }
+
+  try {
     // Kiểm tra trạng thái tài khoản trong cơ sở dữ liệu để ngay lập tức vô hiệu hóa các phiên/token cũ của tài khoản bị khóa
     const user = await prisma.user.findUnique({
       where: { id: decoded.userId },
@@ -37,7 +67,7 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
 
     req.user = { ...decoded, role: user.role as JwtPayload['role'] };
     next();
-  } catch {
-    res.status(401).json({ success: false, error: 'Token hết hạn hoặc không hợp lệ' });
+  } catch (error) {
+    next(error);
   }
 }
