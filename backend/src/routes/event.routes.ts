@@ -6,7 +6,10 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: con
 import prisma from '../config/database';
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
+import { createEventSchema } from '../schemas/event.schema';
+import { EventSubmissionValidationError } from '../services/eventSubmissionValidation';
 import {
+  EventCreateIdempotencyConflictError,
   createEvent,
   getEvents,
   getEventById,
@@ -19,53 +22,6 @@ import { authenticate } from '../middleware/auth';
 import { validate } from '../middleware/validate';
 
 const router = Router();
-
-const bookingSchema = z.object({
-  facilityId: z.string().min(1), startTime: z.string().datetime(), endTime: z.string().datetime(),
-  equipmentItems: z.array(z.object({ equipmentId: z.string().min(1), quantity: z.number().int().positive() })).optional(),
-});
-const createEventSchema = z.object({
-  booking: bookingSchema.optional(),
-  title: z.string().min(5, 'Vui lòng nhập tên sự kiện (tối thiểu 5 ký tự)'),
-  description: z.string().optional(),
-  objectives: z.string().min(10, 'Vui lòng nhập mục tiêu sự kiện (tối thiểu 10 ký tự)'),
-  targetAudience: z.string().optional(),
-  expectedAttendees: z.number().int().positive('Số người tham dự phải lớn hơn 0'),
-  organizingUnit: z.string().min(1, 'Vui lòng nhập đơn vị tổ chức'),
-  contactPerson: z.string().optional(),
-  contactEmail: z.union([z.string().email(), z.literal('')]).optional(),
-  contactPhone: z.string().optional(),
-  startDate: z.string().optional(),
-  endDate: z.string().optional(),
-  setupTime: z.string().optional(),
-  teardownTime: z.string().optional(),
-  preferredVenue: z.string().optional(),
-  planContent: z.string().optional(),
-  safetyPlan: z.string().optional(),
-  communicationPlan: z.string().optional(),
-  budgetItems: z
-    .array(
-      z.object({
-        category: z.string(),
-        itemName: z.string(),
-        quantity: z.number(),
-        unitPrice: z.number(),
-        notes: z.string().optional(),
-      })
-    )
-    .optional(),
-  scheduleItems: z
-    .array(
-      z.object({
-        timeSlot: z.string(),
-        activity: z.string(),
-        responsible: z.string().optional(),
-        notes: z.string().optional(),
-        sortOrder: z.number().optional(),
-      })
-    )
-    .optional(),
-});
 
 // List events
 router.get('/', authenticate, async (req: Request, res: Response, next: NextFunction) => {
@@ -91,9 +47,18 @@ router.get('/', authenticate, async (req: Request, res: Response, next: NextFunc
 router.post('/', authenticate, validate(createEventSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!['BTC', 'ADMIN'].includes(req.user!.role)) { res.status(403).json({ error: 'Không có quyền tạo hồ sơ' }); return; }
-    const event = await createEvent(req.body, req.user!.userId);
+    const requestId = req.get('Idempotency-Key');
+    if (requestId && !z.string().uuid().safeParse(requestId).success) {
+      res.status(400).json({ success: false, error: 'Mã yêu cầu lưu hồ sơ không hợp lệ' });
+      return;
+    }
+    const event = await createEvent(req.body, req.user!.userId, undefined, requestId);
     res.status(201).json({ success: true, data: event });
   } catch (err: any) {
+    if (err instanceof EventCreateIdempotencyConflictError) {
+      res.status(409).json({ success: false, error: err.message });
+      return;
+    }
     res.status(400).json({ success: false, error: err.message });
   }
 });
@@ -181,6 +146,10 @@ router.post('/:id/submit', authenticate, async (req: Request, res: Response, nex
     const result = await submitEvent(id, req.user!.userId);
     res.json({ success: true, data: result, message: 'Đã nộp hồ sơ thành công' });
   } catch (err: any) {
+    if (err instanceof EventSubmissionValidationError) {
+      res.status(422).json({ success: false, error: err.message, data: err.issues });
+      return;
+    }
     res.status(400).json({ success: false, error: err.message });
   }
 });

@@ -11,25 +11,14 @@ import {
 import { useEvents } from '../contexts/EventContext';
 import { useAuth } from '../contexts/AuthContext';
 import { roleNames, formatDate, statusLabels, formatCurrency } from '../utils/helpers';
+import { filterApprovalQueueEvents } from './approvalQueueFilter';
 
 export const ApprovalQueuePage: React.FC = () => {
   const navigate = useNavigate();
   const { events, transitionEvent, saving } = useEvents();
   const { currentUser } = useAuth();
 
-  // Filter events pending current user's approval role according to Sitemap và BPMN
-  const queueEvents = events.filter((e) => {
-    if (currentUser.role === 'BCN_KHOA') return e.status === 'FACULTY_REVIEW';
-    if (currentUser.role === 'DOAN_TRUONG')
-      return e.status === 'UNIVERSITY_REVIEW' || e.status === 'BUDGET_REVIEW' || e.status === 'FACULTY_APPROVED';
-    if (currentUser.role === 'CSVC')
-      return e.status === 'FACILITY_REVIEW' || e.status === 'FACILITY_RETURN_PENDING' || e.status === 'PERMIT_ISSUED';
-    if (currentUser.role === 'KHTC')
-      return e.status === 'FINANCE_REVIEW' || e.status === 'FINANCE_APPROVAL_PENDING';
-    if (currentUser.role === 'BTC')
-      return e.status.includes('REVISION_REQUESTED') || e.status === 'FACILITY_CONFLICT';
-    return true; // Admin sees all
-  });
+  const queueEvents = filterApprovalQueueEvents(events, currentUser.role);
 
   return (
     <div className="space-y-4 sm:space-y-5">

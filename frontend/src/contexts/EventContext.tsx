@@ -5,15 +5,17 @@ import { api, request } from '../services/api';
 import { mapEvent, workflowAction } from '../services/eventMapper';
 
 type Result = Promise<boolean>;
+type OperationErrorHandler = (error: unknown) => void;
+type EventMutationData = Partial<EventItem> & { booking?: EventItem['booking'] | null };
 interface EventContextType {
   events: EventItem[]; facilities: Facility[]; equipment: Equipment[]; notifications: NotificationItem[];
   loading: boolean; syncError: string; saving: boolean;
   refresh: () => Promise<void>;
   getEventById: (id: string) => EventItem | undefined;
-  createEvent: (data: Partial<EventItem>) => Promise<EventItem | undefined>;
-  updateEvent: (id: string, data: Partial<EventItem>, note?: string, expectedVersion?: number) => Result;
+  createEvent: (data: EventMutationData, idempotencyKey?: string, onError?: OperationErrorHandler) => Promise<EventItem | undefined>;
+  updateEvent: (id: string, data: EventMutationData, note?: string, expectedVersion?: number, onError?: OperationErrorHandler) => Result;
   deleteEvent: (id: string) => Result;
-  transitionEvent: (id: string, action: string, target: EventStatus, comments?: string, reason?: string) => Result;
+  transitionEvent: (id: string, action: string, target: EventStatus, comments?: string, reason?: string, onError?: OperationErrorHandler) => Result;
   checkFacilityAvailability: (facilityId: string, start: string, end: string, exclude?: string) => { isAvailable: boolean; conflictEvent?: EventItem };
   bookResource: (id: string, booking: EventItem['booking']) => Result;
   confirmBooking: (id: string) => Result;
@@ -91,7 +93,7 @@ export const EventProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, [refresh]);
 
   // Never write API data over the original localStorage records. They remain a recovery source.
-  const run = async (operation: () => Promise<unknown>, message: string): Result => {
+  const run = async (operation: () => Promise<unknown>, message: string, onError?: OperationErrorHandler): Result => {
     if (busy.current) { showToast('Đang lưu thao tác trước, vui lòng chờ.', 'info'); return false; }
     busy.current = true; epoch.current++; setSaving(true);
     try {
@@ -100,6 +102,7 @@ export const EventProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       return true;
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'Không lưu được lên máy chủ. Vui lòng thử lại.', 'error');
+      onError?.(error);
       return false;
     } finally {
       busy.current = false; setSaving(false);
@@ -107,27 +110,27 @@ export const EventProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   };
   const getEventById = (id: string) => events.find(e => e.id === id);
-  const createEvent = async (data: Partial<EventItem>) => {
+  const createEvent = async (data: EventMutationData, idempotencyKey?: string, onError?: OperationErrorHandler) => {
     let created: EventItem | undefined;
     await run(async () => {
-      const response = await api.createEvent(data);
+      const response = await api.createEvent(data, idempotencyKey);
       created = mapEvent(response.data);
       setEvents(previous => [created!, ...previous]);
-    }, 'Lưu hồ sơ thành công');
+    }, 'Lưu hồ sơ thành công', onError);
     return created;
   };
-  const updateEvent = (id: string, data: Partial<EventItem>, changeNote?: string, expectedVersion?: number) => run(async () => {
+  const updateEvent = (id: string, data: EventMutationData, changeNote?: string, expectedVersion?: number, onError?: OperationErrorHandler) => run(async () => {
     const response = await api.updateEvent(id, { ...data, changeNote, expectedVersion: expectedVersion ?? getEventById(id)?.currentVersion });
     const record = mapEvent(response.data);
     setEvents(previous => previous.map(e => e.id === id ? record : e));
-  }, 'Cập nhật thành công');
+  }, 'Cập nhật thành công', onError);
   const deleteEvent = (id: string) => run(() => request(`/events/${id}`, { method: 'DELETE' }), 'Đã xóa hồ sơ');
-  const transitionEvent = (id: string, _action: string, target: EventStatus, comments?: string, reason?: string) => run(async () => {
+  const transitionEvent = (id: string, _action: string, target: EventStatus, comments?: string, reason?: string, onError?: OperationErrorHandler) => run(async () => {
     const current = (await api.getEventById(id)).data;
     const action = /^[A-Z_]+$/.test(_action) ? _action : workflowAction(current.status, target);
     if (action === 'SUBMIT') await api.submitEvent(id);
     else await api.reviewEvent(id, action, comments, reason);
-  }, 'Cập nhật trạng thái thành công');
+  }, 'Cập nhật trạng thái thành công', onError);
   const checkFacilityAvailability = (facilityId: string, start: string, end: string, exclude?: string) => {
     const conflictEvent = events.find(e => e.id !== exclude && e.booking?.facilityId === facilityId && ['PENDING', 'CONFIRMED'].includes(e.booking.status) && new Date(e.booking.startTime) < new Date(end) && new Date(e.booking.endTime) > new Date(start));
     return { isAvailable: !conflictEvent, conflictEvent };
@@ -179,4 +182,3 @@ export const useEvents = () => {
   if (!value) throw new Error('useEvents must be used within EventProvider');
   return value;
 };
-

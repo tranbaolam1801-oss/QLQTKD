@@ -5,6 +5,31 @@
 
 const BASE_URL = (import.meta as any).env?.VITE_API_URL || '/api';
 
+const API_FIELD_LABELS: Record<string, string> = {
+  title: 'Tên sự kiện',
+  objectives: 'Mục tiêu sự kiện',
+  organizingUnit: 'Đơn vị tổ chức',
+  expectedAttendees: 'Số người tham dự',
+  startDate: 'Thời gian bắt đầu',
+  endDate: 'Thời gian kết thúc',
+  scheduleItems: 'Kịch bản chương trình',
+  budgetItems: 'Dự trù kinh phí',
+  'booking.facilityId': 'Địa điểm tổ chức',
+  booking: 'Địa điểm tổ chức',
+  'booking.equipmentItems': 'Thiết bị đăng ký',
+};
+
+export class ApiRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly fieldErrors: Record<string, string> = {}
+  ) {
+    super(message);
+    this.name = 'ApiRequestError';
+  }
+}
+
 export function getAuthToken(): string | null {
   return localStorage.getItem('eventflow_token') || sessionStorage.getItem('eventflow_token');
 }
@@ -47,7 +72,23 @@ export async function request<T>(endpoint: string, options: RequestInit = {}): P
   const data = await response.json();
 
   if (!response.ok) {
-    throw new Error(Array.isArray(data.data) ? data.data.map((item: any) => item.message).join('; ') : data.error || data.message || 'Yêu cầu API thất bại');
+    const issues = Array.isArray(data.data) ? data.data : [];
+    const fieldErrors: Record<string, string> = {};
+    for (const issue of issues) {
+      if (typeof issue.field !== 'string') continue;
+      const field = issue.field;
+      const label = API_FIELD_LABELS[field] || API_FIELD_LABELS[field.replace(/\.\d+\./g, '.')] || field;
+      const message = typeof issue.message === 'string' && !/^Invalid (input|datetime|enum)/.test(issue.message)
+        ? issue.message
+        : `Vui lòng kiểm tra ${label.toLowerCase()}`;
+      fieldErrors[field] = message;
+    }
+    const issueMessages = Object.values(fieldErrors);
+    throw new ApiRequestError(
+      issueMessages.length ? issueMessages.join('; ') : data.error || data.message || 'Yêu cầu API thất bại',
+      response.status,
+      fieldErrors
+    );
   }
 
   return data;
@@ -100,10 +141,11 @@ export const api = {
     return request<{ success: boolean; events: any[]; pagination: { totalPages: number } }>(`/events${qs}`);
   },
   getEventById: (id: string) => request<{ success: boolean; data: any }>(`/events/${id}`),
-  createEvent: (data: any) =>
+  createEvent: (data: any, idempotencyKey?: string) =>
     request<{ success: boolean; data: any }>('/events', {
       method: 'POST',
       body: JSON.stringify(data),
+      headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
     }),
   updateEvent: (id: string, data: any) =>
     request<{ success: boolean; data: any }>(`/events/${id}`, {

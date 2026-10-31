@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Calendar,
@@ -19,75 +19,56 @@ import {
 import { useEvents } from '../contexts/EventContext';
 import { useAuth } from '../contexts/AuthContext';
 import { formatCurrency } from '../utils/helpers';
-import { BudgetItem, ScheduleItem, ResourceBookingItem } from '../types';
+import { BudgetItem, EventItem, ScheduleItem } from '../types';
+import { ApiRequestError } from '../services/api';
+import {
+  buildEventBookingPayload,
+  validateBudgetItems,
+  validateDraftBasics,
+  validateEventBasics,
+  validateResources,
+  validateScheduleItems,
+} from './eventCreateValidation';
 
-// Hàm lấy ngày mai làm mốc mặc định an toàn trong tương lai
-function getDefaultDateTimeRange() {
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  tomorrow.setHours(8, 0, 0, 0);
-
-  const tomorrowEnd = new Date(tomorrow);
-  tomorrowEnd.setHours(17, 0, 0, 0);
-
+function getMinDateTime() {
   const pad = (n: number) => String(n).padStart(2, '0');
   const toInputVal = (d: Date) =>
     `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-
-  const now = new Date();
-  const minVal = toInputVal(now);
-
-  return {
-    defaultStart: toInputVal(tomorrow),
-    defaultEnd: toInputVal(tomorrowEnd),
-    minDateTime: minVal,
-  };
-}
-
-function isValidDateTimeString(val?: string): boolean {
-  if (!val || typeof val !== 'string' || !val.trim()) return false;
-  const d = new Date(val);
-  return !isNaN(d.getTime());
+  return toInputVal(new Date());
 }
 
 export const EventCreatePage: React.FC = () => {
   const navigate = useNavigate();
-  const { createEvent, transitionEvent, saving, facilities, equipment, checkFacilityAvailability } = useEvents();
+  const { createEvent, updateEvent, transitionEvent, getEventById, saving, facilities, equipment, checkFacilityAvailability } = useEvents();
   const { currentUser } = useAuth();
 
   const [step, setStep] = useState<number>(1);
-  const [dateDefaults] = useState(getDefaultDateTimeRange);
+  const [minDateTime] = useState(getMinDateTime);
+  const createRequestId = useRef<string>(globalThis.crypto.randomUUID());
+  const saveInProgress = useRef(false);
+  const [savingForm, setSavingForm] = useState(false);
+  const [savedDraftId, setSavedDraftId] = useState<string | null>(null);
 
   // Form State
   const [formData, setFormData] = useState({
     title: '',
     description: '',
     objectives: '',
-    targetAudience: 'Sinh viên toàn trường',
-    expectedAttendees: 150,
-    organizingUnit: currentUser.department || 'CLB Sinh viên',
+    targetAudience: '',
+    expectedAttendees: 0,
+    organizingUnit: currentUser.department || '',
     contactPerson: currentUser.fullName,
     contactEmail: currentUser.email,
     contactPhone: currentUser.phone || '',
-    startDate: dateDefaults.defaultStart,
-    endDate: dateDefaults.defaultEnd,
-    preferredVenue: facilities[0]?.name || '',
-    facilityId: facilities[0]?.id || '',
+    startDate: '',
+    endDate: '',
+    preferredVenue: '',
+    facilityId: '',
   });
 
-  const [scheduleItems, setScheduleItems] = useState<ScheduleItem[]>([
-    { id: '1', timeSlot: '08:00 - 08:30', activity: 'Đón tiếp đại biểu và sinh viên', responsible: 'Ban Lễ tân' },
-    { id: '2', timeSlot: '08:30 - 11:30', activity: 'Nội dung chính của chương trình', responsible: 'Ban Tổ chức' },
-  ]);
-
-  const [budgetItems, setBudgetItems] = useState<BudgetItem[]>([
-    { id: '1', category: 'In ấn', itemName: 'Backdrop sân khấu và Standee', quantity: 1, unitPrice: 2000000, totalPrice: 2000000 },
-    { id: '2', category: 'Nước uống', itemName: 'Nước suối và trà bánh đại biểu', quantity: 1, unitPrice: 1200000, totalPrice: 1200000 },
-  ]);
-
-  const [selectedEquipment, setSelectedEquipment] = useState<{ equipmentId: string; quantity: number }[]>([
-    { equipmentId: equipment[0]?.id || '', quantity: 2 },
-  ]);
+  const [scheduleItems, setScheduleItems] = useState<ScheduleItem[]>([]);
+  const [budgetItems, setBudgetItems] = useState<BudgetItem[]>([]);
+  const [selectedEquipment, setSelectedEquipment] = useState<{ equipmentId: string; quantity: number }[]>([]);
 
   const [errors, setErrors] = useState<Record<string, string>>({});
 
@@ -96,7 +77,7 @@ export const EventCreatePage: React.FC = () => {
 
   // Facility availability check - bọc an toàn tuyệt đối, xóa ô thời gian không bị trắng màn hình
   const availabilityCheck = React.useMemo(() => {
-    if (!formData.facilityId || !isValidDateTimeString(formData.startDate) || !isValidDateTimeString(formData.endDate)) {
+    if (!formData.facilityId || !formData.startDate || !formData.endDate) {
       return { isAvailable: true, conflictEvent: undefined };
     }
     try {
@@ -111,116 +92,32 @@ export const EventCreatePage: React.FC = () => {
   }, [formData.facilityId, formData.startDate, formData.endDate, checkFacilityAvailability]);
 
   const validateStep1 = () => {
-    const err: Record<string, string> = {};
-
-    if (!formData.title.trim()) {
-      err.title = 'Vui lòng nhập tên sự kiện';
-    } else if (formData.title.trim().length < 5) {
-      err.title = 'Tên sự kiện cần có ít nhất 5 ký tự';
-    }
-
-    if (!formData.objectives.trim()) {
-      err.objectives = 'Vui lòng nhập mục tiêu sự kiện';
-    } else if (formData.objectives.trim().length < 10) {
-      err.objectives = 'Mục tiêu cần cụ thể hơn (tối thiểu 10 ký tự)';
-    }
-
-    if (!formData.organizingUnit.trim()) {
-      err.organizingUnit = 'Vui lòng nhập đơn vị tổ chức';
-    }
-
-    const attendees = Number(formData.expectedAttendees);
-    if (!attendees || attendees <= 0) {
-      err.expectedAttendees = 'Vui lòng nhập số người tham dự (lớn hơn 0)';
-    }
-
-    if (formData.contactEmail && !/^[^s@]+@[^s@]+\.[^s@]+$/.test(formData.contactEmail.trim())) {
-      err.contactEmail = 'Email liên hệ không hợp lệ';
-    }
-
-    if (formData.contactPhone && !/^[0-9+\s-]{9,15}$/.test(formData.contactPhone.trim())) {
-      err.contactPhone = 'Số điện thoại không hợp lệ (cần từ 9 đến 15 chữ số)';
-    }
-
-    const now = new Date();
-    // Giảm 2 phút để trừ hao độ trễ nhập liệu
-    now.setMinutes(now.getMinutes() - 2);
-
-    if (!formData.startDate || !isValidDateTimeString(formData.startDate)) {
-      err.startDate = 'Vui lòng chọn thời gian bắt đầu';
-    } else if (new Date(formData.startDate) < now) {
-      err.startDate = 'Thời gian bắt đầu không được ở trong quá khứ';
-    }
-
-    if (!formData.endDate || !isValidDateTimeString(formData.endDate)) {
-      err.endDate = 'Vui lòng chọn thời gian kết thúc';
-    } else if (new Date(formData.endDate) < now) {
-      err.endDate = 'Thời gian kết thúc không được ở trong quá khứ';
-    } else if (formData.startDate && isValidDateTimeString(formData.startDate)) {
-      const start = new Date(formData.startDate);
-      const end = new Date(formData.endDate);
-      if (start.getTime() === end.getTime()) {
-        err.endDate = 'Giờ kết thúc không được trùng với giờ bắt đầu';
-      } else if (end < start) {
-        err.endDate = 'Thời gian kết thúc phải sau thời gian bắt đầu';
-      }
-    }
-
+    const err = validateEventBasics(formData);
     setErrors(err);
     return Object.keys(err).length === 0;
   };
 
   const validateStep2 = () => {
-    const err: Record<string, string> = {};
-    if (!scheduleItems || scheduleItems.length === 0) {
-      err.schedule = 'Vui lòng thêm ít nhất một tiết mục hoặc nội dung trong kịch bản';
-    } else {
-      const hasEmpty = scheduleItems.some((s) => !s.timeSlot.trim() || !s.activity.trim());
-      if (hasEmpty) {
-        err.schedule = 'Vui lòng điền đầy đủ khung giờ và nội dung cho tất cả các tiết mục';
-      }
-    }
+    const err = validateScheduleItems(scheduleItems);
     setErrors(err);
     return Object.keys(err).length === 0;
   };
 
   const validateStep3 = () => {
-    const err: Record<string, string> = {};
-    if (budgetItems && budgetItems.length > 0) {
-      const invalidItem = budgetItems.some(
-        (b) => !b.itemName.trim() || isNaN(Number(b.quantity)) || Number(b.quantity) <= 0 || isNaN(Number(b.unitPrice)) || Number(b.unitPrice) < 0
-      );
-      if (invalidItem) {
-        err.budget = 'Các khoản chi cần có tên rõ ràng, số lượng lớn hơn 0 và đơn giá là số không âm (VNĐ)';
-      }
-    }
+    const err = validateBudgetItems(budgetItems);
     setErrors(err);
     return Object.keys(err).length === 0;
   };
 
   const validateStep4 = () => {
-    const err: Record<string, string> = {};
-    const selectedFacility = facilities.find((f) => f.id === formData.facilityId);
-    const attendees = Number(formData.expectedAttendees) || 0;
-
-    if (selectedFacility && selectedFacility.capacity && attendees > selectedFacility.capacity) {
-      err.facility = `Số người dự kiến (${attendees}) vượt quá sức chứa của ${selectedFacility.name} (${selectedFacility.capacity} chỗ)`;
-    }
-
-    for (const se of selectedEquipment) {
-      const eq = equipment.find((e) => e.id === se.equipmentId);
-      if (eq) {
-        if (se.quantity <= 0) {
-          err.equipment = `Số lượng thiết bị "${eq.name}" phải lớn hơn 0`;
-          break;
-        }
-        if (se.quantity > eq.availableQuantity) {
-          err.equipment = `Thiết bị "${eq.name}" chỉ còn khả dụng ${eq.availableQuantity} cái`;
-          break;
-        }
-      }
-    }
-
+    const err = validateResources(
+      formData.facilityId,
+      facilities,
+      Number(formData.expectedAttendees) || 0,
+      selectedEquipment,
+      equipment,
+      true
+    );
     setErrors(err);
     return Object.keys(err).length === 0;
   };
@@ -235,7 +132,6 @@ export const EventCreatePage: React.FC = () => {
   };
 
   const handleBack = () => {
-    setErrors({});
     setStep((prev) => Math.max(prev - 1, 1));
   };
 
@@ -275,70 +171,153 @@ export const EventCreatePage: React.FC = () => {
     setBudgetItems(copy);
   };
 
-  // Submit / Save
-  const handleSave = async (isSubmit: boolean) => {
-    if (saving) return;
-    if (!validateStep1()) {
-      setStep(1);
-      return;
-    }
-    if (!validateStep2()) {
-      setStep(2);
-      return;
-    }
-    if (!validateStep3()) {
-      setStep(3);
-      return;
-    }
-    if (!validateStep4()) {
-      setStep(4);
-      return;
+  const handleApiValidationError = (error: unknown) => {
+    if (!(error instanceof ApiRequestError) || !Object.keys(error.fieldErrors).length) return;
+
+    const mappedErrors: Record<string, string> = {};
+    const errorSteps: number[] = [];
+    for (const [field, message] of Object.entries(error.fieldErrors)) {
+      if (field.startsWith('booking.facilityId') || field === 'booking' || field === 'preferredVenue') {
+        mappedErrors.facility = message;
+        errorSteps.push(4);
+      } else if (field.startsWith('booking.equipmentItems')) {
+        mappedErrors.equipment = message;
+        errorSteps.push(4);
+      } else if (field.startsWith('scheduleItems')) {
+        mappedErrors.schedule = message;
+        errorSteps.push(2);
+      } else if (field.startsWith('budgetItems')) {
+        mappedErrors.budget = message;
+        errorSteps.push(3);
+      } else if (['title', 'objectives', 'organizingUnit', 'expectedAttendees', 'contactEmail', 'contactPhone', 'startDate', 'endDate'].includes(field)) {
+        mappedErrors[field] = message;
+        errorSteps.push(1);
+      }
     }
 
-    const bookingEquipment: ResourceBookingItem[] = selectedEquipment.map((se) => {
-      const eq = equipment.find((e) => e.id === se.equipmentId);
-      return {
-        equipmentId: se.equipmentId,
-        equipmentName: eq ? eq.name : 'Thiết bị',
-        quantity: Math.max(1, Number(se.quantity) || 1),
-      };
-    });
-
-    const facility = facilities.find((f) => f.id === formData.facilityId);
-
-    const newEv = await createEvent({
-      title: formData.title.trim(),
-      description: formData.description.trim(),
-      objectives: formData.objectives.trim(),
-      targetAudience: formData.targetAudience.trim(),
-      expectedAttendees: Math.max(1, Number(formData.expectedAttendees) || 1),
-      organizingUnit: formData.organizingUnit.trim(),
-      contactPerson: formData.contactPerson.trim(),
-      contactEmail: formData.contactEmail.trim(),
-      contactPhone: formData.contactPhone.trim(),
-      startDate: new Date(formData.startDate).toISOString(),
-      endDate: new Date(formData.endDate).toISOString(),
-      preferredVenue: facility?.name || formData.preferredVenue,
-      scheduleItems,
-      budgetItems,
-      booking: {
-        id: `bk-${Date.now()}`,
-        facilityId: formData.facilityId,
-        facilityName: facility?.name || formData.preferredVenue,
-        startTime: new Date(formData.startDate).toISOString(),
-        endTime: new Date(formData.endDate).toISOString(),
-        status: availabilityCheck.isAvailable ? 'PENDING' : 'CONFLICT',
-        conflictDetails: !availabilityCheck.isAvailable
-          ? `Trùng lịch với hồ sơ ${availabilityCheck.conflictEvent?.eventCode}`
-          : undefined,
-        equipmentItems: bookingEquipment,
-      },
-    });
-
-    if (!newEv) return;
-    if (isSubmit) await transitionEvent(newEv.id, 'Nộp hồ sơ', 'FACULTY_REVIEW');
-    navigate(`/events/${newEv.id}`);
+    if (errorSteps.length) {
+      setErrors(mappedErrors);
+      setStep(Math.min(...errorSteps));
+    }
   };
+
+  const handleSave = async (isSubmit: boolean) => {
+    if (saving || saveInProgress.current) return;
+    saveInProgress.current = true;
+    setSavingForm(true);
+
+    try {
+      const existingEvent = savedDraftId ? getEventById(savedDraftId) : undefined;
+      const alreadySubmitted = existingEvent?.status === 'FACULTY_REVIEW';
+      if (isSubmit && !alreadySubmitted) {
+        if (!validateStep1()) {
+          setStep(1);
+          return;
+        }
+        if (!validateStep2()) {
+          setStep(2);
+          return;
+        }
+        if (!validateStep3()) {
+          setStep(3);
+          return;
+        }
+        if (!validateStep4()) {
+          setStep(4);
+          return;
+        }
+      } else {
+        const draftErrors = validateDraftBasics(formData);
+        setErrors(draftErrors);
+        if (Object.keys(draftErrors).length) {
+          setStep(1);
+          return;
+        }
+      }
+
+      const facility = facilities.find((item) => item.id === formData.facilityId);
+      const start = formData.startDate ? new Date(formData.startDate) : undefined;
+      const end = formData.endDate ? new Date(formData.endDate) : undefined;
+      const startDate = start && !Number.isNaN(start.getTime()) ? start.toISOString() : undefined;
+      const endDate = end && !Number.isNaN(end.getTime()) ? end.toISOString() : undefined;
+      const bookingPayload = buildEventBookingPayload(
+        formData.facilityId,
+        facilities,
+        startDate,
+        endDate,
+        selectedEquipment,
+        equipment
+      );
+
+      const payload: Partial<EventItem> & { booking?: EventItem['booking'] | null } = {
+        title: formData.title.trim(),
+        description: formData.description.trim(),
+        objectives: formData.objectives.trim(),
+        targetAudience: formData.targetAudience.trim(),
+        expectedAttendees: Number.isInteger(Number(formData.expectedAttendees)) && Number(formData.expectedAttendees) > 0
+          ? Number(formData.expectedAttendees)
+          : undefined,
+        organizingUnit: formData.organizingUnit.trim(),
+        contactPerson: formData.contactPerson.trim(),
+        contactEmail: formData.contactEmail.trim(),
+        contactPhone: formData.contactPhone.trim(),
+        startDate,
+        endDate,
+        preferredVenue: facility?.name,
+        scheduleItems: scheduleItems.map((item, index) => ({
+          ...item,
+          timeSlot: item.timeSlot.trim(),
+          activity: item.activity.trim(),
+          responsible: item.responsible.trim(),
+          sortOrder: index,
+        })),
+        budgetItems: budgetItems.map((item) => ({
+          ...item,
+          category: item.category.trim(),
+          itemName: item.itemName.trim(),
+          quantity: Number(item.quantity),
+          unitPrice: Number(item.unitPrice),
+          totalPrice: Number(item.quantity) * Number(item.unitPrice),
+        })),
+        booking: facility && bookingPayload ? {
+          id: `bk-${createRequestId.current}`,
+          ...bookingPayload,
+          status: availabilityCheck.isAvailable ? 'PENDING' : 'CONFLICT',
+          conflictDetails: !availabilityCheck.isAvailable
+            ? `Trùng lịch với hồ sơ ${availabilityCheck.conflictEvent?.eventCode}`
+            : undefined,
+        } : null,
+      };
+
+      let eventId = savedDraftId;
+      if (eventId && !alreadySubmitted) {
+        const updated = await updateEvent(eventId, payload, 'Hoàn thiện hồ sơ trước khi nộp', undefined, handleApiValidationError);
+        if (!updated) return;
+      } else if (!eventId) {
+        const created = await createEvent(payload, createRequestId.current, handleApiValidationError);
+        if (!created) return;
+        eventId = created.id;
+        setSavedDraftId(eventId);
+      }
+
+      if (isSubmit && !alreadySubmitted) {
+        const submitted = await transitionEvent(eventId, 'Nộp hồ sơ', 'FACULTY_REVIEW', undefined, undefined, handleApiValidationError);
+        if (!submitted) return;
+      }
+      navigate(`/events/${eventId}`);
+    } finally {
+      saveInProgress.current = false;
+      setSavingForm(false);
+    }
+  };
+
+  const stepErrorKeys: Record<number, string[]> = {
+    1: ['title', 'objectives', 'organizingUnit', 'expectedAttendees', 'contactEmail', 'contactPhone', 'startDate', 'endDate'],
+    2: ['schedule'],
+    3: ['budget'],
+    4: ['facility', 'equipment'],
+  };
+  const hasStepError = (stepId: number) => stepErrorKeys[stepId]?.some((field) => Boolean(errors[field])) ?? false;
 
   return (
     <div className="max-w-4xl mx-auto space-y-4 sm:space-y-5">
@@ -363,12 +342,15 @@ export const EventCreatePage: React.FC = () => {
             const Icon = s.icon;
             const isCurrent = step === s.id;
             const isPast = step > s.id;
+            const hasError = hasStepError(s.id);
             return (
               <div
                 key={s.id}
                 className={`flex items-center gap-2 ${
                   isCurrent
                     ? 'text-blue-600 font-bold'
+                    : hasError
+                    ? 'text-rose-600 font-bold'
                     : isPast
                     ? 'text-emerald-600'
                     : 'text-slate-400'
@@ -378,12 +360,14 @@ export const EventCreatePage: React.FC = () => {
                   className={`w-7 h-7 rounded-full flex items-center justify-center text-xs border ${
                     isCurrent
                       ? 'bg-blue-50 border-blue-600 text-blue-600'
+                      : hasError
+                      ? 'bg-rose-50 border-rose-500 text-rose-600'
                       : isPast
                       ? 'bg-emerald-50 border-emerald-500 text-emerald-600'
                       : 'border-slate-200 bg-slate-50 text-slate-400'
                   }`}
                 >
-                  {isPast ? <Check className="w-4 h-4" /> : <Icon className="w-3.5 h-3.5" />}
+                  {hasError ? <AlertTriangle className="w-3.5 h-3.5" /> : isPast ? <Check className="w-4 h-4" /> : <Icon className="w-3.5 h-3.5" />}
                 </div>
                 <span className="hidden sm:inline">{s.label}</span>
               </div>
@@ -463,7 +447,7 @@ export const EventCreatePage: React.FC = () => {
                 </label>
                 <input
                   type="datetime-local"
-                  min={dateDefaults.minDateTime}
+                  min={minDateTime}
                   value={formData.startDate}
                   onChange={(e) => setFormData({ ...formData, startDate: e.target.value })}
                   className="w-full text-xs p-2.5 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-hidden focus:border-blue-500"
@@ -477,7 +461,7 @@ export const EventCreatePage: React.FC = () => {
                 </label>
                 <input
                   type="datetime-local"
-                  min={formData.startDate || dateDefaults.minDateTime}
+                  min={formData.startDate || minDateTime}
                   value={formData.endDate}
                   onChange={(e) => setFormData({ ...formData, endDate: e.target.value })}
                   className="w-full text-xs p-2.5 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-hidden focus:border-blue-500"
@@ -723,11 +707,6 @@ export const EventCreatePage: React.FC = () => {
           <div className="space-y-4">
             <h2 className="text-sm font-bold text-slate-800 border-b pb-2">Bước 4: Mượn Địa điểm và Thiết bị</h2>
 
-            {errors.facility && (
-              <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700">
-                {errors.facility}
-              </div>
-            )}
             {errors.equipment && (
               <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700">
                 {errors.equipment}
@@ -736,7 +715,7 @@ export const EventCreatePage: React.FC = () => {
 
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Lựa chọn Hội trường / Phòng mượn:
+                Địa điểm tổ chức <span className="text-rose-500">*</span>
               </label>
               <select
                 value={formData.facilityId}
@@ -748,14 +727,26 @@ export const EventCreatePage: React.FC = () => {
                     preferredVenue: fac ? fac.name : '',
                   });
                 }}
-                className="w-full text-xs p-2.5 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white"
+                aria-invalid={Boolean(errors.facility)}
+                aria-describedby={errors.facility ? 'event-facility-error' : undefined}
+                className={`w-full text-xs p-2.5 rounded-xl border bg-slate-50 focus:bg-white ${
+                  errors.facility ? 'border-rose-500' : 'border-slate-200'
+                }`}
               >
+                <option value="">
+                  {facilities.length ? '— Chọn địa điểm tổ chức —' : 'Chưa có địa điểm khả dụng'}
+                </option>
                 {facilities.map((f) => (
                   <option key={f.id} value={f.id}>
                     {f.name} (Sức chứa: {f.capacity} chỗ) — {f.location}
                   </option>
                 ))}
               </select>
+              {errors.facility && (
+                <p id="event-facility-error" className="text-[11px] text-rose-600 mt-1" role="alert">
+                  {errors.facility}
+                </p>
+              )}
             </div>
 
             {/* Live Availability Banner */}
@@ -842,23 +833,27 @@ export const EventCreatePage: React.FC = () => {
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <span className="text-slate-400">Tên sự kiện:</span>
-                  <div className="font-bold text-slate-900">{formData.title}</div>
+                  <div className="font-bold text-slate-900">{formData.title || 'Chưa nhập'}</div>
                 </div>
                 <div>
                   <span className="text-slate-400">Đơn vị tổ chức:</span>
-                  <div className="font-semibold text-slate-800">{formData.organizingUnit}</div>
+                  <div className="font-semibold text-slate-800">{formData.organizingUnit || 'Chưa nhập'}</div>
                 </div>
                 <div>
                   <span className="text-slate-400">Thời gian:</span>
-                  <div className="font-semibold text-slate-800">{formData.startDate} → {formData.endDate}</div>
+                  <div className="font-semibold text-slate-800">
+                    {formData.startDate || 'Chưa chọn'} → {formData.endDate || 'Chưa chọn'}
+                  </div>
                 </div>
                 <div>
                   <span className="text-slate-400">Địa điểm đăng ký:</span>
-                  <div className="font-semibold text-blue-700">{formData.preferredVenue}</div>
+                  <div className="font-semibold text-blue-700">{formData.preferredVenue || 'Chưa chọn địa điểm'}</div>
                 </div>
                 <div>
                   <span className="text-slate-400">Quy mô:</span>
-                  <div className="font-semibold text-slate-800">{formData.expectedAttendees} sinh viên</div>
+                  <div className="font-semibold text-slate-800">
+                    {formData.expectedAttendees > 0 ? `${formData.expectedAttendees} sinh viên` : 'Chưa xác định'}
+                  </div>
                 </div>
                 <div>
                   <span className="text-slate-400">Tổng dự toán:</span>
@@ -877,7 +872,7 @@ export const EventCreatePage: React.FC = () => {
         )}
 
         {/* Form Bottom Controls */}
-        <div className="flex items-center justify-between border-t border-slate-100 pt-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-4">
           <button
             type="button"
             onClick={step === 1 ? () => navigate('/events') : handleBack}
@@ -886,30 +881,41 @@ export const EventCreatePage: React.FC = () => {
             <ArrowLeft className="w-4 h-4" /> {step === 1 ? 'Hủy bỏ' : 'Quay lại'}
           </button>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
             {step < 5 ? (
-              <button
-                type="button"
-                onClick={handleNext}
-                className="flex items-center gap-1.5 px-4 py-2.5 bg-[#005FAF] hover:bg-[#004A8A] text-white rounded-xl text-xs font-bold cursor-pointer shadow-xs min-h-[40px]"
-              >
-                Tiếp tục <ArrowRight className="w-4 h-4" />
-              </button>
-            ) : (
-              <div className="flex items-center gap-2">
+              <>
                 <button
                   type="button"
-                  disabled={saving}
+                  disabled={saving || savingForm}
                   onClick={() => handleSave(false)}
-                  className="flex items-center gap-1.5 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold cursor-pointer"
+                  className="flex items-center gap-1.5 px-3 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold cursor-pointer disabled:opacity-60"
+                >
+                  <Save className="w-4 h-4" /> Lưu nháp
+                </button>
+                <button
+                  type="button"
+                  disabled={saving || savingForm}
+                  onClick={handleNext}
+                  className="flex items-center gap-1.5 px-4 py-2.5 bg-[#005FAF] hover:bg-[#004A8A] text-white rounded-xl text-xs font-bold cursor-pointer shadow-xs min-h-[40px] disabled:opacity-60"
+                >
+                  Tiếp tục <ArrowRight className="w-4 h-4" />
+                </button>
+              </>
+            ) : (
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <button
+                  type="button"
+                  disabled={saving || savingForm}
+                  onClick={() => handleSave(false)}
+                  className="flex items-center gap-1.5 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold cursor-pointer disabled:opacity-60"
                 >
                   <Save className="w-4 h-4" /> Lưu bản nháp
                 </button>
                 <button
                   type="button"
-                  disabled={saving}
+                  disabled={saving || savingForm}
                   onClick={() => handleSave(true)}
-                  className="flex items-center gap-1.5 px-5 py-2.5 bg-[#009444] hover:bg-[#007A38] text-white rounded-xl text-xs font-bold cursor-pointer shadow-xs min-h-[40px]"
+                  className="flex items-center gap-1.5 px-5 py-2.5 bg-[#009444] hover:bg-[#007A38] text-white rounded-xl text-xs font-bold cursor-pointer shadow-xs min-h-[40px] disabled:opacity-60"
                 >
                   <Send className="w-4 h-4" /> Nộp hồ sơ chính thức
                 </button>

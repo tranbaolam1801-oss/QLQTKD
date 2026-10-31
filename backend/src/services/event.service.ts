@@ -1,8 +1,10 @@
 import prisma from '../config/database';
 import { Prisma } from '@prisma/client';
+import { createHash } from 'node:crypto';
 import { UserRole, EventStatus } from '../types';
 import { generateEventCode } from '../utils/generateCode';
 import { createNotification } from './notification.service';
+import { EventSubmissionValidationError, validateEventSubmission } from './eventSubmissionValidation';
 
 export const eventInclude = {
       createdBy: {
@@ -57,6 +59,66 @@ export const eventInclude = {
       versions: { orderBy: { version: 'desc' } },
     } satisfies Prisma.EventInclude;
 
+export class EventCreateIdempotencyConflictError extends Error {
+  constructor() {
+    super('Yêu cầu này đã lưu một bản nháp khác. Không tạo hồ sơ trùng; hãy tải lại hồ sơ đã lưu trước khi tiếp tục.');
+    this.name = 'EventCreateIdempotencyConflictError';
+  }
+}
+
+type EventBookingInput = {
+  facilityId: string;
+  startTime: string;
+  endTime: string;
+  equipmentItems?: Array<{ equipmentId: string; quantity: number }>;
+};
+
+const activeBookingStatuses = ['PENDING', 'CONFIRMED', 'TENTATIVE'];
+
+async function validateEventBooking(
+  tx: Prisma.TransactionClient,
+  booking: EventBookingInput,
+  expectedAttendees?: number,
+  excludeEventId?: string
+) {
+  const start = new Date(booking.startTime);
+  const end = new Date(booking.endTime);
+  if (start.getTime() === end.getTime()) {
+    throw new Error('Giờ kết thúc không được trùng với giờ bắt đầu');
+  }
+  if (!(start < end)) throw new Error('Thời gian kết thúc phải sau thời gian bắt đầu');
+
+  const facility = await tx.facility.findUnique({ where: { id: booking.facilityId } });
+  if (!facility?.isActive) throw new Error('Địa điểm được chọn không tồn tại hoặc tạm ngưng hoạt động');
+  if (facility.capacity && (expectedAttendees || 0) > facility.capacity) {
+    throw new Error(`Số người tham dự (${expectedAttendees}) vượt quá sức chứa tối đa của ${facility.name} (${facility.capacity} chỗ)`);
+  }
+
+  const overlap = {
+    status: { in: activeBookingStatuses },
+    startTime: { lt: end },
+    endTime: { gt: start },
+    ...(excludeEventId ? { eventId: { not: excludeEventId } } : {}),
+  };
+  if (await tx.resourceBooking.count({ where: { facilityId: booking.facilityId, ...overlap } })) {
+    throw new Error('Địa điểm đã có sự kiện đăng ký trong khung giờ này. Vui lòng chọn khung giờ khác.');
+  }
+
+  for (const item of booking.equipmentItems || []) {
+    const equipment = await tx.equipment.findUnique({ where: { id: item.equipmentId } });
+    const used = await tx.resourceBookingItem.aggregate({
+      where: {
+        equipmentId: item.equipmentId,
+        booking: overlap,
+      },
+      _sum: { quantity: true },
+    });
+    if (!equipment?.isActive || (used._sum?.quantity || 0) + item.quantity > equipment.totalQuantity) {
+      throw new Error('Thiết bị không đủ số lượng');
+    }
+  }
+}
+
 export async function createEvent(data: {
   title: string;
   description?: string;
@@ -89,11 +151,28 @@ export async function createEvent(data: {
     notes?: string;
     sortOrder?: number;
   }>;
-  booking?: { facilityId: string; startTime: string; endTime: string; equipmentItems?: Array<{ equipmentId: string; quantity: number }> };
-}, userId: string, legacy?: { key: string; snapshot: string }) {
+  booking?: EventBookingInput | null;
+}, userId: string, legacy?: { key: string; snapshot: string }, requestId?: string) {
   const eventCode = await generateEventCode();
+  const idempotencySettingKey = requestId ? `create-event:${userId}:${requestId}` : undefined;
+  const requestFingerprint = requestId
+    ? createHash('sha256').update(JSON.stringify(data)).digest('hex')
+    : undefined;
 
-  const event = await prisma.$transaction(async (tx) => {
+  let event: { id: string };
+  try {
+    event = await prisma.$transaction(async (tx) => {
+    if (idempotencySettingKey && requestFingerprint) {
+      const previousRequest = await tx.systemSetting.findUnique({ where: { key: idempotencySettingKey } });
+      if (previousRequest) {
+        const previous = JSON.parse(previousRequest.value) as { eventId?: string; fingerprint?: string };
+        if (previous.fingerprint !== requestFingerprint || !previous.eventId) {
+          throw new EventCreateIdempotencyConflictError();
+        }
+        return { id: previous.eventId };
+      }
+    }
+
     if (legacy) {
       const existing = await tx.systemSetting.findUnique({ where: { key: legacy.key } });
       if (existing) return { id: JSON.parse(existing.value).eventId };
@@ -116,26 +195,7 @@ export async function createEvent(data: {
       }
     }
     if (data.booking) {
-      const b = data.booking;
-      const start = new Date(b.startTime), end = new Date(b.endTime);
-      if (start.getTime() === end.getTime()) {
-        throw new Error('Giờ kết thúc không được trùng với giờ bắt đầu');
-      }
-      if (!(start < end)) throw new Error('Thời gian kết thúc phải sau thời gian bắt đầu');
-      const facility = await tx.facility.findUnique({ where: { id: b.facilityId } });
-      if (!facility?.isActive) throw new Error('Địa điểm được chọn không tồn tại hoặc tạm ngưng hoạt động');
-      if (facility.capacity && (data.expectedAttendees || 0) > facility.capacity) {
-        throw new Error(`Số người tham dự (${data.expectedAttendees}) vượt quá sức chứa tối đa của ${facility.name} (${facility.capacity} chỗ)`);
-      }
-      const overlap = { status: { in: ['PENDING', 'CONFIRMED', 'TENTATIVE'] }, startTime: { lt: end }, endTime: { gt: start } };
-      if (await tx.resourceBooking.count({ where: { facilityId: b.facilityId, ...overlap } })) {
-        throw new Error('Địa điểm đã có sự kiện đăng ký trong khung giờ này. Vui lòng chọn khung giờ khác.');
-      }
-      for (const item of b.equipmentItems || []) {
-        const equipment = await tx.equipment.findUnique({ where: { id: item.equipmentId } });
-        const used = await tx.resourceBookingItem.aggregate({ where: { equipmentId: item.equipmentId, booking: overlap }, _sum: { quantity: true } });
-        if (!equipment?.isActive || (used._sum.quantity || 0) + item.quantity > equipment.totalQuantity) throw new Error('Thiết bị không đủ số lượng');
-      }
+      await validateEventBooking(tx, data.booking, data.expectedAttendees);
     }
     const created = await tx.event.create({
       data: {
@@ -197,6 +257,15 @@ export async function createEvent(data: {
         bookingItems: { create: (b.equipmentItems || []).map(i => ({ equipmentId: i.equipmentId, quantity: i.quantity })) },
       } });
     }
+    if (idempotencySettingKey && requestFingerprint) {
+      await tx.systemSetting.create({
+        data: {
+          key: idempotencySettingKey,
+          category: 'EVENT_CREATE_IDEMPOTENCY',
+          value: JSON.stringify({ eventId: created.id, fingerprint: requestFingerprint }),
+        },
+      });
+    }
     if (legacy) await tx.systemSetting.create({ data: {
       key: legacy.key, category: 'LEGACY_BACKUP', value: JSON.stringify({ eventId: created.id, snapshot: legacy.snapshot }),
     } });
@@ -229,7 +298,20 @@ export async function createEvent(data: {
     });
 
     return created;
-  });
+    });
+  } catch (error) {
+    if (error instanceof EventCreateIdempotencyConflictError) throw error;
+    const isUniqueConflict = !!error && typeof error === 'object' && 'code' in error && error.code === 'P2002';
+    if (!idempotencySettingKey || !requestFingerprint || !isUniqueConflict) throw error;
+
+    const committedRequest = await prisma.systemSetting.findUnique({ where: { key: idempotencySettingKey } });
+    if (!committedRequest) throw error;
+    const committed = JSON.parse(committedRequest.value) as { eventId?: string; fingerprint?: string };
+    if (committed.fingerprint !== requestFingerprint || !committed.eventId) {
+      throw new EventCreateIdempotencyConflictError();
+    }
+    event = { id: committed.eventId };
+  }
 
   return getEventById(event.id);
 }
@@ -344,6 +426,40 @@ export async function updateEvent(id: string, data: Record<string, unknown>, use
       await tx.eventScheduleItem.deleteMany({ where: { eventId: id } });
       await tx.eventScheduleItem.createMany({ data: data.scheduleItems.map((i: any, index: number) => ({ eventId: id, timeSlot: i.timeSlot, activity: i.activity, responsible: i.responsible, notes: i.notes, sortOrder: index })) });
     }
+    if (data.booking !== undefined) {
+      const currentBooking = await tx.resourceBooking.findFirst({
+        where: { eventId: id, status: { in: [...activeBookingStatuses, 'CONFLICT'] } },
+        orderBy: { updatedAt: 'desc' },
+      });
+
+      if (data.booking === null) {
+        if (currentBooking) {
+          await tx.resourceBooking.update({ where: { id: currentBooking.id }, data: { status: 'REJECTED' } });
+        }
+      } else {
+        const booking = data.booking as EventBookingInput;
+        await validateEventBooking(tx, booking, Number(data.expectedAttendees ?? event.expectedAttendees) || undefined, id);
+        const bookingData = {
+          facilityId: booking.facilityId,
+          startTime: new Date(booking.startTime),
+          endTime: new Date(booking.endTime),
+        };
+        const savedBooking = currentBooking
+          ? await tx.resourceBooking.update({ where: { id: currentBooking.id }, data: bookingData })
+          : await tx.resourceBooking.create({ data: { eventId: id, ...bookingData } });
+
+        await tx.resourceBookingItem.deleteMany({ where: { bookingId: savedBooking.id } });
+        if (booking.equipmentItems?.length) {
+          await tx.resourceBookingItem.createMany({
+            data: booking.equipmentItems.map((item) => ({
+              bookingId: savedBooking.id,
+              equipmentId: item.equipmentId,
+              quantity: item.quantity,
+            })),
+          });
+        }
+      }
+    }
     const user = await tx.user.findUnique({ where: { id: userId } });
     await tx.workflowHistory.create({ data: { eventId: id, fromStatus: event.status, toStatus: event.status, action: 'UPDATE', actorId: userId, actorName: user?.fullName, actorRole: user?.role, comments: String(data.changeNote || 'Cập nhật hồ sơ') } });
   });
@@ -353,10 +469,26 @@ export async function updateEvent(id: string, data: Record<string, unknown>, use
 export async function submitEvent(id: string, userId: string) {
   const event = await prisma.event.findUnique({
     where: { id },
-    include: { budgetItems: true },
+    include: {
+      budgetItems: true,
+      scheduleItems: true,
+      resourceBookings: { include: { facility: true } },
+    },
   });
 
   if (!event || event.deletedAt) throw new Error('Không tìm thấy hồ sơ');
+  if (event.status === EventStatus.FACULTY_REVIEW) {
+    const previousSubmission = await prisma.workflowHistory.findFirst({
+      where: {
+        eventId: id,
+        action: 'SUBMIT',
+        actorId: userId,
+        toStatus: EventStatus.FACULTY_REVIEW,
+      },
+    });
+    if (previousSubmission) return getEventById(id);
+  }
+
   // BTC or ADMIN can submit
 
   const submittableStatuses = [
@@ -370,18 +502,8 @@ export async function submitEvent(id: string, userId: string) {
     throw new Error('Không thể nộp hồ sơ ở trạng thái hiện tại');
   }
 
-  // Validate required fields
-  const errors: string[] = [];
-  if (!event.title) errors.push('Tên sự kiện là bắt buộc');
-  if (!event.organizingUnit) errors.push('Đơn vị tổ chức là bắt buộc');
-  if (!event.startDate) errors.push('Ngày bắt đầu là bắt buộc');
-  if (!event.endDate) errors.push('Ngày kết thúc là bắt buộc');
-  if (!event.expectedAttendees) errors.push('Số lượng người tham dự là bắt buộc');
-  if (!event.objectives) errors.push('Mục tiêu sự kiện là bắt buộc');
-
-  if (errors.length > 0) {
-    throw new Error(`Hồ sơ chưa đầy đủ: ${errors.join(', ')}`);
-  }
+  const issues = validateEventSubmission(event);
+  if (issues.length) throw new EventSubmissionValidationError(issues);
 
   const user = await prisma.user.findUnique({ where: { id: userId } });
 
