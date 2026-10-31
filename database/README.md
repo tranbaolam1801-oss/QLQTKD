@@ -11,6 +11,7 @@ eventflow/
 └── database/
     ├── MY_DUE_QLSK_PostgreSQL_ALL_IN_ONE.sql # PostgreSQL: schema, RBAC, dữ liệu, hàm và trigger
     ├── POSTGRESQL_ACCOUNT_REGISTRATION.sql  # PostgreSQL: bảng User và token khôi phục cho backend hiện tại
+    ├── MIGRATE_MY_DUE_PRISMA_SCHEMA.sql     # PostgreSQL: schema ứng dụng backend Prisma hiện tại
     ├── schema.sql                   # Schema SQL Server
     ├── rbac_permissions_matrix.sql  # Danh mục 6 vai trò, 30+ quyền hạn & ma trận ánh xạ quyền
     ├── seed_data.sql                # Dữ liệu mẫu khởi tạo: 13 tài khoản DUE, 6 hội trường, 5 thiết bị
@@ -132,7 +133,9 @@ Nếu đang dùng backend hiện tại trên Render, luồng đăng ký cần c�
 psql -U postgres -d MY_DUE_QLSK -v ON_ERROR_STOP=1 -f database/POSTGRESQL_ACCOUNT_REGISTRATION.sql
 ```
 
-File này tạo cấu trúc khớp với `backend/prisma/schema.postgresql.prisma`, bao gồm email duy nhất không phân biệt chữ hoa/thường, hash mật khẩu và dữ liệu khóa đăng nhập. Nó chỉ bổ sung hai bảng xác thực; các API sự kiện/nghiệp vụ vẫn cần đầy đủ schema `my_due` trước khi bật `POSTGRES_CUTOVER_APPROVED=true` trên Render. Sao lưu và kiểm tra database trước khi chạy trên production.
+`POSTGRESQL_ACCOUNT_REGISTRATION.sql` là migration cũ chỉ tạo hai bảng xác thực; không chạy file này nếu đang dùng migration đầy đủ. Để hoàn thiện schema backend Prisma, dùng `database/MIGRATE_MY_DUE_PRISMA_SCHEMA.sql`: migration được sinh từ `backend/prisma/schema.postgresql.prisma`, kiểm tra cấu trúc, khóa chính và unique index của hai bảng xác thực hiện có, dừng nếu bất kỳ tên bảng cần tạo nào đã tồn tại để tránh xung đột, tạo các model còn thiếu cùng index và khóa ngoại, và không đọc/ghi các bảng legacy trong `public`.
+
+Trước khi áp dụng migration đầy đủ trên production, hãy tạo backup Supabase và kiểm tra có thể restore; rà soát kết quả inventory bảng trong schema `my_due`; sau đó mở SQL trong Supabase SQL Editor để review trước khi chạy. Migration dùng transaction, lock/statement timeout, không có `DROP`, `TRUNCATE`, reset, nạp dữ liệu demo hay đổi RLS; nếu kiểm tra cấu trúc hiện tại không khớp, script sẽ dừng. Không deploy/cho backend ghi nghiệp vụ cho đến khi migration hoàn tất và các kiểm tra sau migration đạt yêu cầu. Vì môi trường phát triển hiện không có PostgreSQL server/client hoặc database test riêng, migration chưa được thực thi trên database test; chỉ mới được sinh từ Prisma schema và kiểm tra tĩnh.
 
 ### Backend Prisma (SQLite hiện tại)
 
