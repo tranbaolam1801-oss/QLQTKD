@@ -1,0 +1,67 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
+// A fresh isolated database for every run; dev.db is never touched.
+const database = path.resolve(__dirname, `../prisma/sync-test-${Date.now()}.db`);
+fs.writeFileSync(database, '');
+process.env.DATABASE_URL = `file:${database.replace(/\\/g, '/')}`;
+process.env.JWT_SECRET = 'isolated-integration-test-only';
+const schema = spawnSync(process.execPath, ['node_modules/prisma/build/index.js', 'db', 'push', '--skip-generate'], { cwd: path.resolve(__dirname, '..'), env: process.env, encoding: 'utf8' });
+if (schema.status !== 0) throw new Error(schema.stderr || schema.stdout);
+const prisma = require('../dist/config/database').default;
+const bcrypt = require('bcryptjs');
+const app = require('../dist/app').default;
+let server;
+async function main() {
+  const hash = await bcrypt.hash('test-password', 4);
+  for (const [id, role] of [['a','BTC'],['b','BCN_KHOA'],['c','BTC']]) await prisma.user.create({ data: { id, email: `${id}@test.example`, fullName: id, role, passwordHash: hash, department: 'Test' } });
+  await prisma.facility.create({ data: { id: 'room', code: 'ROOM', name: 'Room', type: 'ROOM', capacity: 100 } });
+  server = app.listen(0, '127.0.0.1');
+  await new Promise(resolve => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${server.address().port}/api`;
+  async function call(url, token, method='GET', body) {
+    const response = await fetch(base+url, { method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body ? JSON.stringify(body) : undefined });
+    return { status: response.status, body: await response.json() };
+  }
+  assert.equal((await call('/events')).status, 401);
+  assert.equal((await call('/auth/login', null, 'POST', { email: 'a@test.example', password: 'bad' })).status, 401);
+  const login = async id => (await call('/auth/login', null, 'POST', { email: `${id}@test.example`, password: 'test-password' })).body.data.token;
+  const a=await login('a'), b=await login('b'), c=await login('c');
+  const payload = { title: 'Shared event test', objectives: 'Test shared persistence', organizingUnit: 'Test', expectedAttendees: 10, startDate: '2027-01-01T01:00:00.000Z', endDate: '2027-01-01T02:00:00.000Z', budgetItems: [{ category: 'Test', itemName: 'Water', quantity: 2, unitPrice: 10 }], scheduleItems: [{ timeSlot: '08:00', activity: 'Welcome', responsible: 'A' }], booking: { facilityId: 'room', startTime: '2027-01-01T01:00:00.000Z', endTime: '2027-01-01T02:00:00.000Z' } };
+  const created = await call('/events',a,'POST',payload);
+  assert.equal(created.status,201,JSON.stringify(created.body));
+  const id=created.body.data.id;
+  assert.equal(created.body.data.scheduleItems.length,1);
+  assert.equal(created.body.data.resourceBookings.length,1);
+  const listB=await call('/events',b);
+  assert.equal(listB.body.events[0].id,id);
+  assert.equal(listB.body.events[0].budgetItems[0].totalPrice,20);
+  assert.equal((await call('/events',c)).body.events.length,0);
+  assert.equal((await call(`/events/${id}`,c)).status,404);
+  assert.equal((await call('/events',a,'POST',payload)).status,400);
+  assert.equal(await prisma.event.count(),1,'Failed booking must roll back event');
+  assert.equal((await call(`/events/${id}`,a,'PUT',{ title:'Updated on A', budgetItems:[{category:'Other',itemName:'Water',quantity:3,unitPrice:10}], expectedVersion:1 })).status,200);
+  assert.equal((await call(`/events/${id}`,a,'PUT',{ title:'Stale update', expectedVersion:1 })).status,400);
+  assert.equal((await call(`/events/${id}`,b)).body.data.title,'Updated on A');
+  assert.equal((await call(`/events/${id}/submit`,a,'POST')).status,200);
+  assert.equal((await call(`/events/${id}`,b)).body.data.status,'FACULTY_REVIEW');
+  assert.equal((await call(`/events/${id}/review`,b,'POST',{action:'APPROVE',comments:'Approved from B'})).status,200);
+  const readA=(await call(`/events/${id}`,a)).body.data;
+  assert.equal(readA.status,'UNIVERSITY_REVIEW');
+  assert.equal(readA.approvalDecisions.length,1);
+  assert.equal((await call(`/events/${id}`,a,'PUT',{title:'Invalid late edit'})).status,400);
+  const legacy={...payload,id:'legacy-1',booking:undefined,createdById:'a',status:'COMPLETED',report:{summary:'Original report'}};
+  const first=await call('/events/import-legacy',a,'POST',legacy);
+  const second=await call('/events/import-legacy',a,'POST',legacy);
+  assert.equal(first.status,200,JSON.stringify(first.body));
+  assert.equal(first.body.data.id,second.body.data.id);
+  assert.equal(first.body.data.status,'DRAFT');
+  const snapshot=await prisma.systemSetting.findUnique({where:{key:'legacy:a:legacy-1'}});
+  assert.equal(JSON.parse(JSON.parse(snapshot.value).snapshot).report.summary,'Original report');
+  assert.equal((await call('/events/import-legacy',c,'POST',legacy)).status,403);
+  await prisma.$disconnect();
+  assert.equal((await call(`/events/${id}`,b)).body.data.status,'UNIVERSITY_REVIEW','Must survive DB reconnect');
+  console.log('PASS: independent sessions share create/edit/submit/approve; auth, rollback, stale-edit protection, durable storage and idempotent legacy import.');
+}
+main().catch(error => { console.error(error); process.exitCode=1; }).finally(async () => { if(server) await new Promise(resolve=>server.close(resolve)); await prisma.$disconnect(); fs.unlinkSync(database); });
