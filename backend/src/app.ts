@@ -34,6 +34,7 @@ app.get('/api/health', (_req, res) => {
   res.json({
     status: 'ok',
     name: 'EventFlow API Server - ĐH Kinh tế ĐHĐN',
+    database: process.env.DATABASE_URL?.startsWith('postgres') ? 'PostgreSQL (Cloud SQL)' : 'SQLite',
     timestamp: new Date().toISOString(),
   });
 });
