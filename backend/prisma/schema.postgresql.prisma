@@ -322,6 +322,8 @@ model Settlement {
   reviewedAt      DateTime?
   reviewNotes     String?
   rejectionReason String?
+  settlementDate DateTime?
+  notes           String?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 

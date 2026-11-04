@@ -433,39 +433,6 @@ export const LoginPage: React.FC = () => {
                 </button>
               </div>
 
-              {/* ── Quick Demo Accounts ── */}
-              <div className="pt-3 border-t border-slate-100">
-                <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-2 flex items-center justify-between">
-                  <span>Tài khoản thử nghiệm nhanh:</span>
-                  <span className="text-[10px] text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded font-bold">Pass: 123456</span>
-                </div>
-                <div className="grid grid-cols-2 gap-1.5 text-xs">
-                  {[
-                    { role: 'BTC', label: 'Ban Tổ chức', email: 'btc1@eventflow.vn' },
-                    { role: 'BCN', label: 'Khoa duyệt', email: 'bcnkhoa@eventflow.vn' },
-                    { role: 'ĐOÀN', label: 'Đoàn trường', email: 'doantruong@eventflow.vn' },
-                    { role: 'CSVC', label: 'Phòng CSVC', email: 'csvc@eventflow.vn' },
-                    { role: 'KHTC', label: 'Phòng KHTC', email: 'khtc@eventflow.vn' },
-                    { role: 'ADMIN', label: 'Quản trị viên', email: 'admin@eventflow.vn' },
-                  ].map((acc) => (
-                    <button
-                      key={acc.email}
-                      type="button"
-                      onClick={() => {
-                        setEmail(acc.email);
-                        setPassword('123456');
-                        setEmailError('');
-                        setPasswordError('');
-                      }}
-                      className="flex items-center justify-between p-1.5 rounded-lg border border-slate-200 hover:border-[#005FAF] hover:bg-blue-50/50 text-slate-700 transition-colors text-left cursor-pointer"
-                    >
-                      <span className="font-medium truncate">{acc.label}</span>
-                      <span className="text-[10px] font-mono text-slate-400 bg-slate-100 px-1 py-0.5 rounded shrink-0">{acc.role}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
               {/* ── Đăng ký tài khoản mới link ── */}
               <div className="pt-3 border-t border-slate-100 text-center">
                 <p className="text-xs sm:text-sm text-slate-600">

@@ -1,6 +1,7 @@
 import prisma from '../config/database';
 import { UserRole, EventStatus, DecisionType, ApprovalStage } from '../types';
 import { notifyEventStatusChange } from './notification.service';
+import { assertSettlementReadyForApproval, assertSettlementReadyForSubmission } from './settlement.service';
 
 interface TransitionDef {
   to: EventStatus;
@@ -209,6 +210,35 @@ export async function transitionState(
     }
   }
 
+  if (
+    (action === 'SUBMIT_DOCUMENTS' && event.status === EventStatus.FINANCE_DOCUMENTS_PENDING) ||
+    (action === 'RESUBMIT' && [EventStatus.FINANCE_REVISION_REQUESTED, EventStatus.PAYMENT_REJECTED].includes(event.status as EventStatus))
+  ) {
+    const settlement = await prisma.settlement.findFirst({
+      where: { eventId },
+      include: { items: true, documents: true },
+    });
+    if (!settlement) throw new Error('Cần tạo hồ sơ quyết toán trước khi nộp');
+    assertSettlementReadyForSubmission(settlement);
+  }
+  if (
+    (action === 'APPROVE' && event.status === EventStatus.FINANCE_REVIEW) ||
+    (action === 'SETTLE' && event.status === EventStatus.FINANCE_APPROVAL_PENDING)
+  ) {
+    const settlement = await prisma.settlement.findFirst({
+      where: { eventId },
+      include: { items: true, documents: true },
+    });
+    if (!settlement) throw new Error('Không tìm thấy hồ sơ quyết toán');
+    if (action === 'APPROVE' && !['SUBMITTED', 'DRAFT'].includes(settlement.status)) {
+      throw new Error('Hồ sơ quyết toán chưa được nộp cho KHTC');
+    }
+    if (action === 'SETTLE' && settlement.status !== 'APPROVED') {
+      throw new Error('Quyết toán chưa được KHTC phê duyệt');
+    }
+    assertSettlementReadyForApproval(settlement);
+  }
+
   return executeTransition(event, transitionDef.to, action, userId, userRole, data);
 }
 
@@ -221,10 +251,12 @@ async function executeTransition(
   data?: { comments?: string; reason?: string }
 ) {
   const user = await prisma.user.findUnique({ where: { id: userId } });
+  const completesAfterSettlement = toStatus === EventStatus.SETTLED;
+  const finalStatus = completesAfterSettlement ? EventStatus.COMPLETED : toStatus;
 
   const result = await prisma.$transaction(async (tx) => {
     // Update event status
-    const updateData: Record<string, unknown> = { status: toStatus, currentVersion: { increment: 1 } };
+    const updateData: Record<string, unknown> = { status: finalStatus, currentVersion: { increment: 1 } };
 
     // Update sub-statuses based on transition
     if (toStatus === EventStatus.PERMIT_ISSUED) {
@@ -246,7 +278,19 @@ async function executeTransition(
     if (toStatus === EventStatus.SETTLED) {
       updateData.settlementStatus = 'SETTLED';
     }
-    if (toStatus === EventStatus.COMPLETED) {
+    if (toStatus === EventStatus.FINANCE_REVIEW) {
+      updateData.settlementStatus = 'SUBMITTED';
+    }
+    if (toStatus === EventStatus.FINANCE_APPROVAL_PENDING) {
+      updateData.settlementStatus = 'APPROVED';
+    }
+    if (toStatus === EventStatus.FINANCE_REVISION_REQUESTED) {
+      updateData.settlementStatus = 'REVISION_REQUESTED';
+    }
+    if (toStatus === EventStatus.PAYMENT_REJECTED) {
+      updateData.settlementStatus = 'REJECTED';
+    }
+    if (finalStatus === EventStatus.COMPLETED) {
       updateData.reportStatus = 'ACCEPTED';
     }
     if (toStatus === EventStatus.CANCELLED) {
@@ -255,6 +299,62 @@ async function executeTransition(
 
     const changed = await tx.event.updateMany({ where: { id: event.id, status: event.status, currentVersion: event.currentVersion }, data: updateData as Parameters<typeof tx.event.updateMany>[0]['data'] });
     if (!changed.count) throw new Error('Hồ sơ đã thay đổi trên máy khác. Hãy tải lại.');
+    if (
+      action === 'SUBMIT_DOCUMENTS' ||
+      (action === 'RESUBMIT' && [EventStatus.FINANCE_REVISION_REQUESTED, EventStatus.PAYMENT_REJECTED].includes(event.status as EventStatus))
+    ) {
+      const settlement = await tx.settlement.findFirst({
+        where: { eventId: event.id },
+        include: { items: true, documents: true },
+      });
+      if (!settlement) throw new Error('Không tìm thấy hồ sơ quyết toán');
+      assertSettlementReadyForSubmission(settlement);
+      await tx.settlement.update({
+        where: { id: settlement.id },
+        data: { status: 'SUBMITTED', submittedAt: new Date(), submittedById: userId },
+      });
+    }
+    if (action === 'APPROVE' && event.status === EventStatus.FINANCE_REVIEW) {
+      const settlement = await tx.settlement.findFirst({
+        where: { eventId: event.id },
+        include: { items: true, documents: true },
+      });
+      if (!settlement || !['SUBMITTED', 'DRAFT'].includes(settlement.status)) throw new Error('Hồ sơ quyết toán chưa được nộp cho KHTC');
+      assertSettlementReadyForApproval(settlement);
+      await tx.settlement.update({
+        where: { id: settlement.id },
+        data: {
+          status: 'APPROVED',
+          reviewedById: userId,
+          reviewedAt: new Date(),
+          reviewNotes: data?.comments || null,
+        },
+      });
+    }
+    if (action === 'REQUEST_REVISION' && event.status === EventStatus.FINANCE_REVIEW) {
+      await tx.settlement.updateMany({
+        where: { eventId: event.id },
+        data: { status: 'REVISION_REQUESTED', reviewNotes: data?.comments || data?.reason },
+      });
+    }
+    if (action === 'REJECT_PAYMENT' && event.status === EventStatus.FINANCE_APPROVAL_PENDING) {
+      await tx.settlement.updateMany({
+        where: { eventId: event.id },
+        data: { status: 'REJECTED', reviewNotes: data?.comments || data?.reason },
+      });
+    }
+    if (action === 'SETTLE' && event.status === EventStatus.FINANCE_APPROVAL_PENDING) {
+      const settlement = await tx.settlement.findFirst({
+        where: { eventId: event.id },
+        include: { items: true, documents: true },
+      });
+      if (!settlement || settlement.status !== 'APPROVED') throw new Error('Quyết toán chưa được KHTC phê duyệt');
+      assertSettlementReadyForApproval(settlement);
+      await tx.settlement.update({
+        where: { id: settlement.id },
+        data: { status: 'SETTLED', reviewedById: userId, reviewedAt: new Date() },
+      });
+    }
     if (toStatus === EventStatus.FACILITY_RESERVED) await tx.resourceBooking.updateMany({ where: { eventId: event.id }, data: { status: 'CONFIRMED' } });
     if (['CANCELLED', 'FACULTY_REJECTED', 'UNIVERSITY_REJECTED', 'BUDGET_REJECTED'].includes(toStatus)) await tx.resourceBooking.updateMany({ where: { eventId: event.id }, data: { status: 'REJECTED' } });
     const updated = await tx.event.findUniqueOrThrow({ where: { id: event.id } });
@@ -272,6 +372,20 @@ async function executeTransition(
         comments: data?.comments || data?.reason,
       },
     });
+    if (completesAfterSettlement) {
+      await tx.workflowHistory.create({
+        data: {
+          eventId: event.id,
+          fromStatus: EventStatus.SETTLED,
+          toStatus: EventStatus.COMPLETED,
+          action: 'AUTO_COMPLETE_AFTER_SETTLEMENT',
+          actorId: userId,
+          actorName: user?.fullName,
+          actorRole: userRole,
+          comments: data?.comments || 'Hồ sơ tự động hoàn tất sau khi KHTC xác nhận quyết toán hợp lệ',
+        },
+      });
+    }
 
     // Create approval decision if applicable
     const decision = mapActionToDecision(action);
@@ -311,7 +425,7 @@ async function executeTransition(
         entityType: 'Event',
         entityId: event.id,
         oldValue: JSON.stringify({ status: event.status }),
-        newValue: JSON.stringify({ status: toStatus }),
+        newValue: JSON.stringify({ status: finalStatus }),
       },
     });
 
@@ -319,7 +433,7 @@ async function executeTransition(
   });
 
   // Send notifications (outside transaction for performance)
-  await notifyEventStatusChange(event, event.status, toStatus, user?.fullName || 'Hệ thống', data?.comments);
+  await notifyEventStatusChange(event, event.status, finalStatus, user?.fullName || 'Hệ thống', data?.comments);
 
   return result;
 }

@@ -95,7 +95,7 @@ export const EventDetailPage: React.FC = () => {
     SUBMIT: 'Nộp hồ sơ', RESUBMIT: 'Nộp lại hồ sơ', APPROVE: 'Phê duyệt', REJECT: 'Từ chối', REQUEST_REVISION: 'Yêu cầu chỉnh sửa', CANCEL: 'Hủy hồ sơ',
     PROCEED_BUDGET: 'Chuyển duyệt dự toán', CONFIRM: 'Xác nhận giữ chỗ', CONFLICT: 'Báo trùng lịch', ADJUST: 'Gửi lại yêu cầu CSVC', READY: 'Xác nhận sẵn sàng', HANDOVER: 'Xác nhận bàn giao',
     START_EVENT: 'Bắt đầu sự kiện', END_EVENT: 'Xác nhận đã tổ chức sự kiện xong', CONFIRM_FACILITY: 'Chuyển mượn cơ sở vật chất', INSPECT: 'Kiểm tra hoàn trả', ACCEPT: 'Nghiệm thu', INCIDENT: 'Báo sự cố', RESOLVE: 'Đã xử lý sự cố',
-    SUBMIT_REPORT: 'Nộp báo cáo', SUBMIT_DOCUMENTS: 'Nộp chứng từ', SETTLE: 'Hoàn tất quyết toán', REJECT_PAYMENT: 'Từ chối thanh toán', COMPLETE: 'Đóng hồ sơ',
+    SUBMIT_REPORT: 'Nộp báo cáo', SUBMIT_DOCUMENTS: 'Nộp chứng từ', SETTLE: 'Xác nhận hoàn tất quyết toán', REJECT_PAYMENT: 'Từ chối thanh toán', COMPLETE: 'Hoàn tất hồ sơ',
   };
 
   if (!event) {
@@ -486,8 +486,8 @@ export const EventDetailPage: React.FC = () => {
 
         {/* Tab 5: Attachments */}
         {activeTab === 'attachments' && (
-          <div className="p-4 sm:p-5 space-y-3.5">
-            <div className="flex items-center justify-between">
+          <div className="space-y-3.5 p-4 sm:p-5">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <h3 className="text-sm font-bold text-slate-800">Tài liệu và Hồ sơ đính kèm</h3>
                 <p className="text-xs text-slate-500 mt-0.5">Các văn bản, dự toán, kế hoạch chi tiết hoặc hồ sơ liên quan</p>
@@ -533,32 +533,30 @@ export const EventDetailPage: React.FC = () => {
                 {event.attachments.map((doc) => (
                   <div
                     key={doc.id}
-                    className="flex items-center justify-between p-3.5 rounded-xl border border-slate-200 hover:bg-slate-50/80 transition-colors text-xs"
+                    className="flex flex-col gap-3 rounded-xl border border-slate-200 p-3.5 text-xs transition-colors hover:bg-slate-50/80 sm:flex-row sm:items-center sm:justify-between"
                   >
-                    <div className="flex items-center gap-3">
+                    <div className="flex min-w-0 items-center gap-3">
                       <div className="p-2 rounded-lg bg-blue-50 text-blue-600">
                         <Paperclip className="w-4 h-4" />
                       </div>
-                      <div>
-                        <div className="font-semibold text-slate-800">{doc.name}</div>
-                        <div className="text-[10px] text-slate-400">
+                      <div className="min-w-0">
+                        <div className="break-all font-semibold text-slate-800">{doc.name}</div>
+                        <div className="break-words text-[10px] text-slate-400">
                           {doc.type} • {doc.size} {doc.date ? `• Tải lên ngày ${doc.date}` : ''}
                         </div>
                       </div>
                     </div>
-                    <a
-                      href={api.getAttachmentDownloadUrl(event.id, doc.id)}
-                      onClick={(e) => {
-                        e.preventDefault();
-                        void api.downloadAttachment(event.id, doc.id, doc.name).catch(error => window.alert(error.message));
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void api.downloadAttachment(event.id, doc.id, doc.name).catch(error =>
+                          showToast(error instanceof Error ? error.message : 'Không tải được tài liệu.', 'error')
+                        );
                       }}
-                      download={doc.name}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-blue-50 text-slate-700 hover:text-blue-600 font-semibold cursor-pointer transition-colors"
+                      className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-slate-100 px-3 py-2 font-semibold text-slate-700 transition-colors hover:bg-blue-50 hover:text-blue-600"
                     >
                       <Download className="w-3.5 h-3.5" /> Tải về
-                    </a>
+                    </button>
                   </div>
                 ))}
               </div>
@@ -627,7 +625,7 @@ export const EventDetailPage: React.FC = () => {
             <h3 className="text-sm font-bold text-slate-800">Hồ sơ quyết toán tài chính (Phòng KHTC)</h3>
             {event.settlement ? (
               <div className="space-y-4 text-xs">
-                <div className="grid grid-cols-3 gap-3 p-4 bg-slate-50 rounded-xl border border-slate-200">
+                <div className="grid grid-cols-1 gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4 sm:grid-cols-3">
                   <div>
                     <div className="text-slate-400">Dự toán đã duyệt</div>
                     <div className="text-base font-bold text-slate-800 mt-1">{formatCurrency(event.settlement.totalBudgeted)}</div>
@@ -642,17 +640,47 @@ export const EventDetailPage: React.FC = () => {
                   </div>
                 </div>
 
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div className="rounded-xl border border-slate-200 p-3">
+                    <div className="text-[11px] font-semibold text-slate-500">Ngày quyết toán</div>
+                    <div className="mt-1 text-slate-800">
+                      {event.settlement.settlementDate ? formatDate(event.settlement.settlementDate) : 'Chưa nhập'}
+                    </div>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 p-3">
+                    <div className="text-[11px] font-semibold text-slate-500">Ghi chú quyết toán</div>
+                    <div className="mt-1 whitespace-pre-wrap break-words text-slate-800">{event.settlement.notes || 'Không có ghi chú'}</div>
+                  </div>
+                </div>
+
                 <h4 className="font-bold text-slate-800 uppercase text-xs pt-2">Chứng từ và Hóa đơn kèm theo</h4>
                 <div className="space-y-2">
                   {(event.settlement?.documents || []).map((doc) => (
-                    <div key={doc.id} className="p-3 bg-white border border-slate-200 rounded-xl flex items-center justify-between">
-                      <div>
-                        <div className="font-bold text-slate-800">{doc.documentNumber} — {doc.description}</div>
-                        <div className="text-slate-400 text-[10px]">Số tiền: {formatCurrency(doc.amount)}</div>
+                    <div key={doc.id} className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="min-w-0">
+                        <div className="break-words font-bold text-slate-800">
+                          {doc.documentNumber || doc.fileName || doc.documentType} — {doc.description || 'Chứng từ tài chính'}
+                        </div>
+                        <div className="mt-1 text-[10px] text-slate-400">Số tiền: {formatCurrency(doc.amount || 0)}</div>
                       </div>
-                      <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                        {doc.isVerified ? 'Đã kiểm tra hợp lệ' : 'Chờ kiểm tra'}
-                      </span>
+                      <div className="flex shrink-0 flex-wrap items-center gap-2">
+                        <span className="rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-[10px] font-bold text-emerald-700">
+                          {doc.isVerified ? 'Đã kiểm tra hợp lệ' : 'Chờ kiểm tra'}
+                        </span>
+                        {doc.filePath && event.settlement.id && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void api.downloadFinancialDocument(event.settlement!.id, doc.id, doc.fileName || doc.documentNumber || 'chung-tu').catch(error =>
+                                showToast(error instanceof Error ? error.message : 'Không tải được chứng từ.', 'error')
+                              );
+                            }}
+                            className="inline-flex items-center gap-1.5 rounded-lg bg-slate-100 px-3 py-2 font-semibold text-slate-700 hover:bg-blue-50 hover:text-blue-600"
+                          >
+                            <Download className="h-3.5 w-3.5" /> Tải về
+                          </button>
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>

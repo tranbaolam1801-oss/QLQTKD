@@ -2,6 +2,7 @@
  * EventFlow API Client
  * Connects frontend to the Express + Prisma REST API
  */
+import type { FinancialDocument } from '../types';
 
 const BASE_URL = (import.meta as any).env?.VITE_API_URL || '/api';
 
@@ -239,15 +240,62 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  updateSettlement: (id: string, data: any) =>
+    request<{ success: boolean; data: any }>(`/settlements/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
   submitSettlement: (id: string) =>
     request<{ success: boolean; data: any; message: string }>(`/settlements/${id}/submit`, {
       method: 'POST',
     }),
-  reviewSettlement: (id: string, decision: 'APPROVED' | 'REJECTED' | 'REQUEST_AMENDMENT', notes?: string) =>
+  reviewSettlement: (id: string, decision: 'APPROVED' | 'REVISION_REQUESTED' | 'REJECTED', notes?: string) =>
     request<{ success: boolean; data: any; message: string }>(`/settlements/${id}/review`, {
       method: 'POST',
       body: JSON.stringify({ decision, notes }),
     }),
+  verifyFinancialDocument: (documentId: string, isVerified: boolean) =>
+    request<{ success: boolean; data: FinancialDocument }>(`/settlements/documents/${documentId}/verify`, {
+      method: 'PUT',
+      body: JSON.stringify({ isVerified }),
+    }),
+  uploadFinancialDocument: async (
+    settlementId: string,
+    document: { documentType: string; documentNumber?: string; amount?: number; description?: string },
+    file: File
+  ) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    for (const [key, value] of Object.entries(document)) {
+      if (value !== undefined) formData.append(key, String(value));
+    }
+    const token = getAuthToken();
+    const response = await fetch(`${BASE_URL}/settlements/${settlementId}/documents/upload`, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: formData,
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Tải chứng từ thất bại');
+    return data;
+  },
+  downloadFinancialDocument: async (settlementId: string, documentId: string, name: string) => {
+    const response = await fetch(`${BASE_URL}/settlements/${settlementId}/documents/${documentId}/download`, {
+      headers: { Authorization: `Bearer ${getAuthToken() || ''}` },
+    });
+    if (!response.ok) throw new Error('Không tải được chứng từ quyết toán');
+    if (response.headers.get('content-type')?.includes('application/json')) {
+      const result = await response.json();
+      window.location.assign(result.url);
+      return;
+    }
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = name;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  },
 
   // Analytics
   getDashboardStats: () =>

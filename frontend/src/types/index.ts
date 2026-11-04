@@ -150,11 +150,22 @@ export interface HandoverRecord {
 export interface FinancialDocument {
   id: string;
   documentType: 'RECEIPT' | 'INVOICE' | 'CONTRACT' | 'OTHER';
-  documentNumber: string;
-  amount: number;
-  description: string;
-  fileName: string;
+  documentNumber?: string | null;
+  amount?: number | null;
+  description?: string | null;
+  fileName?: string | null;
+  filePath?: string | null;
   isVerified: boolean;
+}
+
+export interface SettlementItem {
+  id?: string;
+  itemName: string;
+  category?: string | null;
+  budgetedAmount: number;
+  actualAmount: number;
+  difference?: number;
+  notes?: string | null;
 }
 
 export interface Settlement {
@@ -165,6 +176,9 @@ export interface Settlement {
   difference: number;
   status: 'DRAFT' | 'SUBMITTED' | 'REVIEWING' | 'REVISION_REQUESTED' | 'APPROVED' | 'SETTLED' | 'REJECTED';
   reviewNotes?: string;
+  settlementDate?: string | null;
+  notes?: string | null;
+  items?: SettlementItem[];
   documents: FinancialDocument[];
 }
 
