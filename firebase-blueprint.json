@@ -1,0 +1,67 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User account in the event management system",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "fullName": { "type": "string", "maxLength": 100 },
+        "role": { "type": "string", "enum": ["ADMIN", "BTC", "BCN_KHOA", "DOAN_TRUONG", "CSVC", "KHTC"] },
+        "department": { "type": "string", "maxLength": 100 },
+        "phone": { "type": "string", "maxLength": 20 },
+        "isActive": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["email", "fullName", "role"]
+    },
+    "Event": {
+      "title": "Event",
+      "description": "Student event proposal and workflow state",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "eventCode": { "type": "string", "maxLength": 50 },
+        "title": { "type": "string", "maxLength": 200 },
+        "description": { "type": "string", "maxLength": 2000 },
+        "organizingUnit": { "type": "string", "maxLength": 100 },
+        "status": { "type": "string", "maxLength": 50 },
+        "expectedAttendees": { "type": "integer" },
+        "startDate": { "type": "string", "format": "date-time" },
+        "endDate": { "type": "string", "format": "date-time" },
+        "createdById": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["eventCode", "title", "organizingUnit", "status", "createdById"]
+    },
+    "Facility": {
+      "title": "Facility",
+      "description": "Campus halls and rooms managed by CSVC",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "code": { "type": "string", "maxLength": 50 },
+        "name": { "type": "string", "maxLength": 100 },
+        "location": { "type": "string", "maxLength": 100 },
+        "capacity": { "type": "integer" },
+        "type": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["code", "name"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profile collection"
+    },
+    "/events/{eventId}": {
+      "schema": "Event",
+      "description": "Events collection"
+    },
+    "/facilities/{facilityId}": {
+      "schema": "Facility",
+      "description": "Campus facilities collection"
+    }
+  }
+}

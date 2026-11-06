@@ -1,11 +1,12 @@
 {
-  "projectId": "laughing-spirit-2wpgt",
-  "appId": "1:25565475627:web:65ab1f506857407c23cb6e",
-  "apiKey": "AIzaSyAIsWBm6Z-4ZVj-gtdOUuSNwrxtUt85OpY",
-  "authDomain": "laughing-spirit-2wpgt.firebaseapp.com",
-  "storageBucket": "laughing-spirit-2wpgt.firebasestorage.app",
-  "messagingSenderId": "25565475627",
+  "projectId": "gen-lang-client-0601161839",
+  "appId": "1:364065285265:web:ba030714cbe301c15d8b30",
+  "apiKey": "AIzaSyA0zvH9Bbq5Zkv0BwlHME_a9sbB-R27NnM",
+  "authDomain": "gen-lang-client-0601161839.firebaseapp.com",
+  "firestoreDatabaseId": "ai-studio-qlqtkd-15ba394f-d8d6-4ef5-bede-4c79a62d3072",
+  "storageBucket": "gen-lang-client-0601161839.firebasestorage.app",
+  "messagingSenderId": "364065285265",
   "measurementId": "",
-  "oAuthClientId": "25565475627-43klndsl0a66u59drh4pqr8ugfjonigq.apps.googleusercontent.com",
+  "oAuthClientId": "364065285265-n0b02d7id11tiuht9nnfpfcf37jb5k4b.apps.googleusercontent.com",
   "recaptchaSiteKey": ""
 }

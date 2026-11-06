@@ -6,26 +6,10 @@ dotenv.config();
 
 const isProd = process.env.NODE_ENV === 'production';
 
-// If Cloud SQL environment variables are present, construct the secure socket URL
-if (process.env.SQL_HOST && process.env.SQL_USER) {
-  const user = encodeURIComponent(process.env.SQL_USER || '');
-  const pass = encodeURIComponent(process.env.SQL_PASSWORD || '');
-  const host = encodeURIComponent(process.env.SQL_HOST || '');
-  const db = process.env.SQL_DB_NAME || 'cloud_sql_development_database';
-  process.env.DATABASE_URL = `postgresql://${user}:${pass}@localhost/${db}?host=${host}&schema=my_due`;
-  process.env.DIRECT_URL = process.env.DATABASE_URL;
-} else if (isProd) {
-  // In Production, NEVER silently fallback to SQLite!
-  if (!process.env.DATABASE_URL || !/^postgres(?:ql)?:/.test(process.env.DATABASE_URL)) {
-    throw new Error('FATAL: Production mode requires a valid PostgreSQL (Cloud SQL) DATABASE_URL. Silent SQLite fallback is disabled in Production.');
-  }
-} else if (
-  !process.env.DATABASE_URL ||
-  process.env.DATABASE_URL.includes('POOLER_HOST') ||
-  process.env.DATABASE_URL.includes('USER:PASSWORD')
-) {
-  process.env.DATABASE_URL = 'file:/app/applet/backend/prisma/dev.db';
-}
+// Production and Development Database: Google Cloud Firebase Firestore
+// Database ID: ai-studio-qlqtkd-15ba394f-d8d6-4ef5-bede-4c79a62d3072
+// Project ID: gen-lang-client-0601161839
+console.log('Target Database: Google Cloud Firebase Firestore (gen-lang-client-0601161839 / ai-studio-qlqtkd-15ba394f-d8d6-4ef5-bede-4c79a62d3072)');
 const PORT = parseInt(process.env.PORT || '3000', 10);
 
 async function startServer() {

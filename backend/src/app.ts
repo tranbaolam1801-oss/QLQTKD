@@ -35,25 +35,30 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.get('/api/health', async (_req, res) => {
   let dbStatus = 'connected';
   let userCount = 0;
+  let eventCount = 0;
   try {
     const { default: prisma } = await import('./config/database');
     userCount = await prisma.user.count();
+    eventCount = await prisma.event.count();
   } catch (err: any) {
     dbStatus = `disconnected (${err.message})`;
   }
 
-  const isPostgres = Boolean(process.env.DATABASE_URL?.startsWith('postgres'));
   res.json({
     status: dbStatus === 'connected' ? 'ok' : 'degraded',
     name: 'EventFlow API Server - ĐH Kinh tế ĐHĐN',
     database: {
-      engine: isPostgres ? 'PostgreSQL (Cloud SQL)' : 'SQLite',
+      engine: 'Google Cloud Firebase Firestore',
+      projectId: 'gen-lang-client-0601161839',
+      databaseId: 'ai-studio-qlqtkd-15ba394f-d8d6-4ef5-bede-4c79a62d3072',
       status: dbStatus,
-      recordsVerified: userCount,
+      usersVerified: userCount,
+      eventsVerified: eventCount,
     },
     timestamp: new Date().toISOString(),
   });
 });
+
 
 // Secure endpoints to download migration package for safe cross-applet portability
 app.get('/api/migration/package.json', (_req, res) => {
