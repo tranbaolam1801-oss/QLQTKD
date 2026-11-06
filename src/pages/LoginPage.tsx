@@ -434,7 +434,7 @@ export const LoginPage: React.FC = () => {
               </div>
 
               {/* ── Đăng ký tài khoản mới link ── */}
-              <div className="pt-3 border-t border-slate-100 text-center">
+              <div className="pt-4 border-t border-slate-100 text-center">
                 <p className="text-xs sm:text-sm text-slate-600">
                   Chưa có tài khoản?{' '}
                   <Link

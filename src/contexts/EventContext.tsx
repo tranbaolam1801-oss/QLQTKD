@@ -157,7 +157,25 @@ export const EventProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     let settlement = (await api.getSettlement(id)).data;
     if (!settlement) {
       const event = getEventById(id)!;
-      settlement = (await api.createSettlement({ eventId: id, items: event.budgetItems.map(i => ({ itemName: i.itemName, category: i.category, budgetedAmount: i.totalPrice, actualAmount: i.actualTotal ?? i.totalPrice })) })).data;
+      settlement = (await api.createSettlement({
+        eventId: id,
+        totalActual: data.totalActual,
+        settlementDate: data.settlementDate,
+        notes: data.notes,
+        items: data.items ?? event.budgetItems.map(i => ({
+          itemName: i.itemName,
+          category: i.category,
+          budgetedAmount: i.totalPrice,
+          actualAmount: i.actualTotal ?? 0,
+        })),
+      })).data;
+    } else {
+      settlement = (await api.updateSettlement(settlement.id, {
+        items: data.items,
+        totalActual: data.totalActual,
+        settlementDate: data.settlementDate,
+        notes: data.notes,
+      })).data;
     }
     for (const doc of data.documents || []) {
       if (!settlement.documents.some((d: any) => d.id === doc.id)) {

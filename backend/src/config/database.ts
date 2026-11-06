@@ -1,6 +1,8 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
+const isProd = process.env.NODE_ENV === 'production';
+
 // If Cloud SQL environment variables are present, construct the secure socket URL
 if (process.env.SQL_HOST && process.env.SQL_USER) {
   const user = encodeURIComponent(process.env.SQL_USER || '');
@@ -9,6 +11,11 @@ if (process.env.SQL_HOST && process.env.SQL_USER) {
   const db = process.env.SQL_DB_NAME || 'cloud_sql_development_database';
   process.env.DATABASE_URL = `postgresql://${user}:${pass}@localhost/${db}?host=${host}&schema=my_due`;
   process.env.DIRECT_URL = process.env.DATABASE_URL;
+} else if (isProd) {
+  // In Production, NEVER silently fallback to SQLite!
+  if (!process.env.DATABASE_URL || !/^postgres(?:ql)?:/.test(process.env.DATABASE_URL)) {
+    throw new Error('FATAL: Production mode requires a valid PostgreSQL (Cloud SQL) DATABASE_URL. Silent SQLite fallback is disabled in Production.');
+  }
 } else if (
   !process.env.DATABASE_URL ||
   process.env.DATABASE_URL.includes('POOLER_HOST') ||

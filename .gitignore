@@ -15,7 +15,19 @@ build/
 # Databases & SQLite
 *.db
 *.db-journal
+*.bak
+*.snapshot.*
 dev.db
+dev.db.bak
+sqlite_exported_data.json
+*.tsbuildinfo
+.aistudio/
+bun.lock
+
+# Database seeds containing accounts, password hashes, and private exports
+database/*.private.sql
+database/*_DATA.sql
+database/POSTGRESQL_ALL_IN_ONE_MIGRATION_AND_DATA.sql
 
 # Logs
 npm-debug.log*

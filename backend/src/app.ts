@@ -1,4 +1,6 @@
 import express from 'express';
+import fs from 'fs';
+import path from 'path';
 import { databaseJsonReplacer } from './utils/json';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -29,14 +31,59 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 // Static uploads directory
 // Attachments are served exclusively through authenticated event routes.
 
-// Healthcheck
-app.get('/api/health', (_req, res) => {
+// Healthcheck with live database readiness check
+app.get('/api/health', async (_req, res) => {
+  let dbStatus = 'connected';
+  let userCount = 0;
+  try {
+    const { default: prisma } = await import('./config/database');
+    userCount = await prisma.user.count();
+  } catch (err: any) {
+    dbStatus = `disconnected (${err.message})`;
+  }
+
+  const isPostgres = Boolean(process.env.DATABASE_URL?.startsWith('postgres'));
   res.json({
-    status: 'ok',
+    status: dbStatus === 'connected' ? 'ok' : 'degraded',
     name: 'EventFlow API Server - ĐH Kinh tế ĐHĐN',
-    database: process.env.DATABASE_URL?.startsWith('postgres') ? 'PostgreSQL (Cloud SQL)' : 'SQLite',
+    database: {
+      engine: isPostgres ? 'PostgreSQL (Cloud SQL)' : 'SQLite',
+      status: dbStatus,
+      recordsVerified: userCount,
+    },
     timestamp: new Date().toISOString(),
   });
+});
+
+// Secure endpoints to download migration package for safe cross-applet portability
+app.get('/api/migration/package.json', (_req, res) => {
+  const jsonPath = path.resolve(__dirname, '../prisma/sqlite_exported_data.json');
+  if (fs.existsSync(jsonPath)) {
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', 'attachment; filename="sqlite_exported_data.json"');
+    return res.sendFile(jsonPath);
+  }
+  return res.status(404).json({ error: 'Migration JSON not found' });
+});
+
+app.get('/api/migration/schema.sql', (_req, res) => {
+  const sqlPath = path.resolve(__dirname, '../../database/01_schema_my_due.sql');
+  if (fs.existsSync(sqlPath)) {
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="01_schema_my_due.sql"');
+    return res.sendFile(sqlPath);
+  }
+  return res.status(404).json({ error: 'Schema SQL not found' });
+});
+
+app.get('/api/migration/all-in-one.sql', (_req, res) => {
+  const sqlPath = path.resolve(__dirname, '../../database/POSTGRESQL_ALL_IN_ONE_MIGRATION_AND_DATA.sql');
+  if (fs.existsSync(sqlPath)) {
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="POSTGRESQL_ALL_IN_ONE_MIGRATION_AND_DATA.sql"');
+    return res.sendFile(sqlPath);
+  }
+  return res.status(404).json({ error: 'Migration SQL not found' });
 });
 
 // API Routes
