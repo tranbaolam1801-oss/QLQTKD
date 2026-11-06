@@ -104,17 +104,17 @@ export async function getProcessingTimes() {
   }
 
   const times = events.map((e) => {
-    const firstSubmit = e.workflowHistory.find((h) => h.action === 'SUBMIT');
-    const completion = e.workflowHistory.find((h) => h.toStatus === 'COMPLETED');
+    const firstSubmit = (e.workflowHistory || []).find((h: { action?: string; createdAt: Date }) => h.action === 'SUBMIT');
+    const completion = (e.workflowHistory || []).find((h: { toStatus?: string; createdAt: Date }) => h.toStatus === 'COMPLETED');
     if (firstSubmit && completion) {
-      const days = (completion.createdAt.getTime() - firstSubmit.createdAt.getTime()) / (1000 * 60 * 60 * 24);
+      const days = (new Date(completion.createdAt).getTime() - new Date(firstSubmit.createdAt).getTime()) / (1000 * 60 * 60 * 24);
       return { eventCode: e.eventCode, title: e.title, days: Math.round(days * 10) / 10 };
     }
     return null;
-  }).filter(Boolean);
+  }).filter((t): t is { eventCode: string; title: string; days: number } => Boolean(t));
 
   const avgDays = times.length > 0
-    ? Math.round((times.reduce((sum, t) => sum + (t?.days || 0), 0) / times.length) * 10) / 10
+    ? Math.round((times.reduce((sum: number, t: { days: number }) => sum + (t?.days || 0), 0) / times.length) * 10) / 10
     : 0;
 
   return { averageDays: avgDays, events: times };

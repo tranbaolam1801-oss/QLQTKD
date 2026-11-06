@@ -140,7 +140,7 @@ export async function reviewApplication(eventId: string): Promise<AIReviewResult
     suggestions.push('Sự kiện chưa có dự trù kinh phí chi tiết');
     details.push({ category: 'Ngân sách', level: 'INFO', message: 'Nếu sự kiện có kinh phí, vui lòng bổ sung từng khoản chi cụ thể' });
   } else {
-    const totalBudget = event.budgetItems.reduce((s, i) => s + i.totalPrice, 0);
+    const totalBudget = (event.budgetItems || []).reduce((s: number, i: { totalPrice: number }) => s + (Number(i.totalPrice) || 0), 0);
     if (totalBudget > 50000000) {
       risks.push('Dự toán vượt mức 50 triệu đồng - Cần giải trình định mức chi và hóa đơn VAT theo quy chế tài chính');
       details.push({ category: 'Ngân sách', level: 'WARNING', message: 'Tổng ngân sách lớn yêu cầu thẩm định kỹ nguồn tài trợ và chứng từ' });
@@ -275,7 +275,7 @@ export async function generateReportDraft(eventId: string) {
   if (!event) throw new Error('Không tìm thấy sự kiện');
 
   const settlement = event.settlements[0];
-  const totalBudget = event.budgetItems.reduce((s, i) => s + i.totalPrice, 0);
+  const totalBudget = (event.budgetItems || []).reduce((s: number, i: { totalPrice: number }) => s + (Number(i.totalPrice) || 0), 0);
   const totalActual = settlement ? settlement.totalActual : totalBudget;
 
   const draft = {

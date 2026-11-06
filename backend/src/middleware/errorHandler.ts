@@ -1,13 +1,23 @@
 import { Request, Response, NextFunction } from 'express';
-import { Prisma } from '@prisma/client';
 
-const DATABASE_UNAVAILABLE_CODES = new Set(['P1001', 'P1002', 'P1008', 'P1017', 'P2024', 'P2037']);
+const DATABASE_UNAVAILABLE_CODES = new Set(['P1001', 'P1002', 'P1008', 'P1017', 'P2024', 'P2037', 'UNAVAILABLE', 'DEADLINE_EXCEEDED']);
+
+interface ExtendedError extends Error {
+  code?: string;
+  errorCode?: string;
+  meta?: {
+    modelName?: string;
+    table?: string;
+    column?: string;
+  };
+}
 
 export function errorHandler(err: Error, req: Request, res: Response, _next: NextFunction): void {
-  const knownPrismaError = err instanceof Prisma.PrismaClientKnownRequestError ? err : undefined;
-  const initializationError = err instanceof Prisma.PrismaClientInitializationError ? err : undefined;
-  const prismaCode = knownPrismaError?.code || initializationError?.errorCode;
-  const meta = knownPrismaError?.meta;
+  const extErr = err as ExtendedError;
+  const isPrismaInit = err.name === 'PrismaClientInitializationError';
+  const isPrismaKnown = err.name === 'PrismaClientKnownRequestError';
+  const prismaCode = extErr.code || extErr.errorCode;
+  const meta = extErr.meta;
 
   console.error('[API_ERROR]', JSON.stringify({
     method: req.method,
@@ -19,7 +29,7 @@ export function errorHandler(err: Error, req: Request, res: Response, _next: Nex
     column: typeof meta?.column === 'string' ? meta.column : undefined,
   }));
 
-  if (err instanceof Prisma.PrismaClientInitializationError || DATABASE_UNAVAILABLE_CODES.has(prismaCode || '')) {
+  if (isPrismaInit || DATABASE_UNAVAILABLE_CODES.has(prismaCode || '')) {
     res.status(503).json({
       success: false,
       error: 'Cơ sở dữ liệu tạm thời không khả dụng. Vui lòng thử lại sau.',
@@ -28,7 +38,7 @@ export function errorHandler(err: Error, req: Request, res: Response, _next: Nex
     return;
   }
 
-  if (err instanceof Prisma.PrismaClientKnownRequestError) {
+  if (isPrismaKnown) {
     res.status(500).json({
       success: false,
       error: 'Lỗi cấu hình cơ sở dữ liệu. Vui lòng liên hệ quản trị viên.',

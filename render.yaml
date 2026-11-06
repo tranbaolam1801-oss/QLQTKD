@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: qlqtkd
+    env: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: FIREBASE_PROJECT_ID
+        value: gen-lang-client-0601161839
+      - key: FIRESTORE_DATABASE_ID
+        value: ai-studio-qlqtkd-15ba394f-d8d6-4ef5-bede-4c79a62d3072
+      - key: JWT_SECRET
+        generateValue: true

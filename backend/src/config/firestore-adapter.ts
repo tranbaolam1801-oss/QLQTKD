@@ -5,6 +5,8 @@ import {
   setDoc,
   deleteDoc,
   writeBatch,
+  QueryDocumentSnapshot,
+  DocumentData,
 } from 'firebase/firestore';
 import { firestore } from './firestore';
 import crypto from 'node:crypto';
@@ -17,6 +19,62 @@ type QueryOptions = {
   skip?: number;
   take?: number;
 };
+
+function isFirestoreTimestamp(val: unknown): val is { toDate?: () => Date; seconds: number } {
+  return (
+    typeof val === 'object' &&
+    val !== null &&
+    (('seconds' in val && typeof (val as { seconds: unknown }).seconds === 'number') ||
+      ('toDate' in val && typeof (val as { toDate: unknown }).toDate === 'function'))
+  );
+}
+
+function parseToTimestamp(val: unknown): number | null {
+  if (val instanceof Date) {
+    const t = val.getTime();
+    return Number.isFinite(t) ? t : null;
+  }
+  if (typeof val === 'number') {
+    return Number.isFinite(val) ? val : null;
+  }
+  if (typeof val === 'string') {
+    const t = Date.parse(val);
+    return Number.isFinite(t) ? t : null;
+  }
+  if (isFirestoreTimestamp(val)) {
+    if (typeof val.toDate === 'function') {
+      try {
+        const d = val.toDate();
+        const t = d.getTime();
+        return Number.isFinite(t) ? t : null;
+      } catch {
+        // continue
+      }
+    }
+    if (typeof val.seconds === 'number') {
+      return val.seconds * 1000;
+    }
+  }
+  return null;
+}
+
+function compareFilterValues(val: unknown, opVal: unknown): number {
+  if (val === opVal) return 0;
+  const tVal = parseToTimestamp(val);
+  const tOp = parseToTimestamp(opVal);
+  if (tVal !== null && tOp !== null) {
+    return tVal < tOp ? -1 : tVal > tOp ? 1 : 0;
+  }
+  if (typeof val === 'number' && typeof opVal === 'number') {
+    return val < opVal ? -1 : val > opVal ? 1 : 0;
+  }
+  if (typeof val === 'string' && typeof opVal === 'string') {
+    return val < opVal ? -1 : val > opVal ? 1 : 0;
+  }
+  const sVal = String(val ?? '');
+  const sOp = String(opVal ?? '');
+  return sVal < sOp ? -1 : sVal > sOp ? 1 : 0;
+}
 
 // Evaluate Prisma-style where clause against an in-memory document
 function matchesFilter(item: any, where?: Record<string, any>): boolean {
@@ -69,37 +127,13 @@ function matchesFilter(item: any, where?: Record<string, any>): boolean {
         } else if (op === 'notIn') {
           if (Array.isArray(opVal) && opVal.includes(val)) return false;
         } else if (op === 'lt') {
-          const tVal = val instanceof Date ? val.getTime() : new Date(val).getTime();
-          const tOp = opVal instanceof Date ? opVal.getTime() : new Date(opVal).getTime();
-          if (isNaN(tVal) || isNaN(tOp)) {
-            if (!(val < opVal)) return false;
-          } else {
-            if (!(tVal < tOp)) return false;
-          }
+          if (compareFilterValues(val, opVal) >= 0) return false;
         } else if (op === 'lte') {
-          const tVal = val instanceof Date ? val.getTime() : new Date(val).getTime();
-          const tOp = opVal instanceof Date ? opVal.getTime() : new Date(opVal).getTime();
-          if (isNaN(tVal) || isNaN(tOp)) {
-            if (!(val <= opVal)) return false;
-          } else {
-            if (!(tVal <= tOp)) return false;
-          }
+          if (compareFilterValues(val, opVal) > 0) return false;
         } else if (op === 'gt') {
-          const tVal = val instanceof Date ? val.getTime() : new Date(val).getTime();
-          const tOp = opVal instanceof Date ? opVal.getTime() : new Date(opVal).getTime();
-          if (isNaN(tVal) || isNaN(tOp)) {
-            if (!(val > opVal)) return false;
-          } else {
-            if (!(tVal > tOp)) return false;
-          }
+          if (compareFilterValues(val, opVal) <= 0) return false;
         } else if (op === 'gte') {
-          const tVal = val instanceof Date ? val.getTime() : new Date(val).getTime();
-          const tOp = opVal instanceof Date ? opVal.getTime() : new Date(opVal).getTime();
-          if (isNaN(tVal) || isNaN(tOp)) {
-            if (!(val >= opVal)) return false;
-          } else {
-            if (!(tVal >= tOp)) return false;
-          }
+          if (compareFilterValues(val, opVal) < 0) return false;
         } else if (op === 'contains') {
           const sVal = String(val || '').toLowerCase();
           const sOp = String(opVal || '').toLowerCase();
@@ -115,13 +149,10 @@ function matchesFilter(item: any, where?: Record<string, any>): boolean {
 
     // Direct comparison
     if (val !== condition) {
-      if (val instanceof Date && condition instanceof Date) {
-        if (val.getTime() !== condition.getTime()) return false;
-      } else if (
-        (val instanceof Date || typeof val === 'string') &&
-        (condition instanceof Date || typeof condition === 'string')
-      ) {
-        if (new Date(val).getTime() !== new Date(condition).getTime()) return false;
+      const tVal = parseToTimestamp(val);
+      const tCond = parseToTimestamp(condition);
+      if (tVal !== null && tCond !== null) {
+        if (tVal !== tCond) return false;
       } else {
         return false;
       }
@@ -507,7 +538,7 @@ export class FirestoreAdapter {
           ]);
           const map = this.getCollectionMap(name);
           map.clear();
-          snap.forEach((d) => {
+          snap.forEach((d: QueryDocumentSnapshot<DocumentData>) => {
             map.set(d.id, d.data());
           });
         } catch (colErr: any) {

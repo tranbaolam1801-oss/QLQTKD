@@ -13,7 +13,7 @@ const isProd = process.env.NODE_ENV === 'production';
 // Database ID: ai-studio-qlqtkd-15ba394f-d8d6-4ef5-bede-4c79a62d3072
 // Project ID: gen-lang-client-0601161839
 console.log('Target Database: Google Cloud Firebase Firestore (gen-lang-client-0601161839 / ai-studio-qlqtkd-15ba394f-d8d6-4ef5-bede-4c79a62d3072)');
-const PORT = parseInt(process.env.PORT || '8080', 10);
+const PORT = parseInt(process.env.PORT || (isProd ? '8080' : '3000'), 10);
 const HOST = '0.0.0.0';
 
 async function startServer() {

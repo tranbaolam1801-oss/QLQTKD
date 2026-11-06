@@ -122,14 +122,14 @@ export async function updateSettlement(id: string, data: {
   if (data.items) {
     validateItems(data.items);
     if (data.totalActual !== undefined &&
-      Math.abs(data.totalActual - data.items.reduce((sum, item) => sum + item.actualAmount, 0)) >= 0.01) {
+      Math.abs(data.totalActual - data.items.reduce((sum: number, item: SettlementItemInput) => sum + item.actualAmount, 0)) >= 0.01) {
       throw new Error('Tổng kinh phí thực tế phải bằng tổng các khoản chi chi tiết');
     }
-    const suppliedIds = new Set(data.items.flatMap((item) => item.id ? [item.id] : []));
-    if (settlement.items.some((item) => !suppliedIds.has(item.id))) {
+    const suppliedIds = new Set(data.items.flatMap((item: SettlementItemInput) => item.id ? [item.id] : []));
+    if (settlement.items.some((item: { id: string }) => !suppliedIds.has(item.id))) {
       throw new Error('Không thể bỏ hoặc xóa khoản chi đã lưu');
     }
-    if (data.items.some((item) => item.id && !settlement.items.some((existing) => existing.id === item.id))) {
+    if (data.items.some((item: SettlementItemInput) => item.id && !settlement.items.some((existing: { id: string }) => existing.id === item.id))) {
       throw new Error('Khoản chi không thuộc hồ sơ quyết toán này');
     }
   }

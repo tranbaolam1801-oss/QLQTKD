@@ -2,10 +2,7 @@ import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const baseDir = typeof __dirname !== 'undefined' ? __dirname : process.cwd();
 
 let firebaseConfig: any = {
   projectId: process.env.FIREBASE_PROJECT_ID || 'gen-lang-client-0601161839',
@@ -22,9 +19,10 @@ let firebaseConfig: any = {
 
 const candidatePaths = [
   path.resolve(process.cwd(), 'firebase-applet-config.json'),
-  path.resolve(__dirname, '../../../firebase-applet-config.json'),
-  path.resolve(__dirname, '../../firebase-applet-config.json'),
-  path.resolve(__dirname, '../firebase-applet-config.json'),
+  path.resolve(baseDir, '../../../firebase-applet-config.json'),
+  path.resolve(baseDir, '../../firebase-applet-config.json'),
+  path.resolve(baseDir, '../firebase-applet-config.json'),
+  path.resolve(baseDir, 'firebase-applet-config.json'),
   '/app/firebase-applet-config.json',
 ];
 

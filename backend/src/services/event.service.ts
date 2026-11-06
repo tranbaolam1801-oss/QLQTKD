@@ -1,5 +1,5 @@
 import prisma from '../config/database';
-import { Prisma } from '@prisma/client';
+import { TransactionClient } from '../utils/transaction';
 import { createHash } from 'node:crypto';
 import { UserRole, EventStatus } from '../types';
 import { generateEventCode } from '../utils/generateCode';
@@ -57,7 +57,7 @@ export const eventInclude = {
       },
       eventReport: true,
       versions: { orderBy: { version: 'desc' } },
-    } satisfies Prisma.EventInclude;
+    };
 
 export class EventCreateIdempotencyConflictError extends Error {
   constructor() {
@@ -76,7 +76,7 @@ type EventBookingInput = {
 const activeBookingStatuses = ['PENDING', 'CONFIRMED', 'TENTATIVE'];
 
 async function validateEventBooking(
-  tx: Prisma.TransactionClient,
+  tx: TransactionClient,
   booking: EventBookingInput,
   expectedAttendees?: number,
   excludeEventId?: string

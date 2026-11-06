@@ -70,7 +70,7 @@ router.get('/export', authenticate, async (_req: Request, res: Response, next: N
       `"${e.organizingUnit.replace(/"/g, '""')}"`,
       e.status,
       e.startDate ? e.startDate.toISOString() : '',
-      e.budgetItems.reduce((s, i) => s + i.totalPrice, 0),
+      (e.budgetItems || []).reduce((s: number, i: { totalPrice: number }) => s + (Number(i.totalPrice) || 0), 0),
     ]);
 
     const csvContent = '\uFEFF' + [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');

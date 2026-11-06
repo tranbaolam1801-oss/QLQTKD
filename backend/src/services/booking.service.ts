@@ -1,8 +1,7 @@
 import prisma from '../config/database';
-import { Prisma } from '@prisma/client';
-import { serializableTransaction } from '../utils/transaction';
+import { serializableTransaction, TransactionClient } from '../utils/transaction';
 
-export async function checkAvailability(facilityId: string, startTime: Date, endTime: Date, excludeBookingId?: string, db: Prisma.TransactionClient = prisma) {
+export async function checkAvailability(facilityId: string, startTime: Date, endTime: Date, excludeBookingId?: string, db: TransactionClient = prisma) {
   const where: Record<string, unknown> = {
     facilityId,
     status: { in: ['PENDING', 'TENTATIVE', 'CONFIRMED'] },
@@ -32,7 +31,7 @@ export async function checkEquipmentAvailability(
   startTime: Date,
   endTime: Date,
   excludeBookingId?: string,
-  db: Prisma.TransactionClient = prisma
+  db: TransactionClient = prisma
 ) {
   const equipment = await db.equipment.findUnique({ where: { id: equipmentId } });
   if (!equipment) throw new Error('Không tìm thấy thiết bị');
@@ -54,7 +53,7 @@ export async function checkEquipmentAvailability(
   }
 
   const bookedItems = await db.resourceBookingItem.findMany({ where });
-  const totalBooked = bookedItems.reduce((sum, item) => sum + item.quantity, 0);
+  const totalBooked = (bookedItems || []).reduce((sum: number, item: { quantity: number }) => sum + (Number(item.quantity) || 0), 0);
   const available = equipment.totalQuantity - totalBooked;
 
   return {
@@ -96,8 +95,8 @@ export async function createBooking(data: {
   // Check facility availability
   const conflicts = await checkAvailability(data.facilityId, start, end, undefined, tx);
   if (conflicts.length > 0) {
-    const conflictInfo = conflicts.map(c =>
-      `${c.event.eventCode} (${c.startTime.toLocaleString()} - ${c.endTime.toLocaleString()})`
+    const conflictInfo = conflicts.map((c: any) =>
+      `${c.event?.eventCode || 'Sự kiện'} (${new Date(c.startTime).toLocaleString()} - ${new Date(c.endTime).toLocaleString()})`
     ).join(', ');
     throw new Error(`Phòng đã được đặt trong khoảng thời gian này. Xung đột với: ${conflictInfo}`);
   }
