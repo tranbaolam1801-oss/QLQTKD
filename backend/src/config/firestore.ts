@@ -36,6 +36,15 @@ for (const p of candidatePaths) {
   } catch (_e) {}
 }
 
+if (process.env.FIREBASE_CONFIG_JSON) {
+  try {
+    const parsed = JSON.parse(process.env.FIREBASE_CONFIG_JSON);
+    firebaseConfig = { ...firebaseConfig, ...parsed };
+  } catch (err: any) {
+    console.warn('[Firestore] Cảnh báo: FIREBASE_CONFIG_JSON không đúng định dạng JSON:', err.message);
+  }
+}
+
 export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 export const firestore = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export default firestore;

@@ -5,6 +5,7 @@ import {
   setDoc,
   deleteDoc,
   writeBatch,
+  WriteBatch,
   QueryDocumentSnapshot,
   DocumentData,
 } from 'firebase/firestore';
@@ -558,14 +559,43 @@ export class FirestoreAdapter {
   async saveDocument(collectionName: string, id: string, data: any): Promise<void> {
     const clean = sanitizeForFirestore(data);
     const map = this.getCollectionMap(collectionName);
+    const prev = map.get(id);
     map.set(id, clean);
+
+    if (this.activeBatch) {
+      const docRef = doc(firestore, collectionName, id);
+      this.activeBatch.batch.set(docRef, clean, { merge: true });
+      this.activeBatch.mutations.push({
+        type: 'set',
+        collectionName,
+        id,
+        data: clean,
+        previousData: prev !== undefined ? JSON.parse(JSON.stringify(prev)) : undefined,
+      });
+      return;
+    }
+
     const docRef = doc(firestore, collectionName, id);
     await setDoc(docRef, clean, { merge: true });
   }
 
   async deleteDocument(collectionName: string, id: string): Promise<void> {
     const map = this.getCollectionMap(collectionName);
+    const prev = map.get(id);
     map.delete(id);
+
+    if (this.activeBatch) {
+      const docRef = doc(firestore, collectionName, id);
+      this.activeBatch.batch.delete(docRef);
+      this.activeBatch.mutations.push({
+        type: 'delete',
+        collectionName,
+        id,
+        previousData: prev !== undefined ? JSON.parse(JSON.stringify(prev)) : undefined,
+      });
+      return;
+    }
+
     const docRef = doc(firestore, collectionName, id);
     await deleteDoc(docRef);
   }
@@ -782,16 +812,65 @@ export class FirestoreAdapter {
     return resolved;
   }
 
+  private transactionLock: Promise<void> = Promise.resolve();
+  private activeBatch: {
+    batch: WriteBatch;
+    mutations: Array<{
+      type: 'set' | 'delete';
+      collectionName: string;
+      id: string;
+      data?: any;
+      previousData?: any;
+    }>;
+  } | null = null;
+
   async $transaction<T>(operation: ((tx: FirestoreAdapter) => Promise<T>) | Promise<any>[], _options?: any): Promise<T> {
     await this.ensureReady();
-    if (typeof operation === 'function') {
-      return operation(this);
+
+    let release: () => void = () => {};
+    const currentLock = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const previousLock = this.transactionLock;
+    this.transactionLock = currentLock;
+
+    await previousLock;
+    try {
+      if (typeof operation === 'function') {
+        const batch = writeBatch(firestore);
+        this.activeBatch = { batch, mutations: [] };
+        let result: T;
+        try {
+          result = await operation(this);
+          if (this.activeBatch.mutations.length > 0) {
+            await this.activeBatch.batch.commit();
+          }
+          return result;
+        } catch (txError) {
+          // Rollback in-memory map state on failure
+          for (let i = this.activeBatch.mutations.length - 1; i >= 0; i--) {
+            const m = this.activeBatch.mutations[i];
+            const map = this.getCollectionMap(m.collectionName);
+            if (m.previousData !== undefined) {
+              map.set(m.id, m.previousData);
+            } else {
+              map.delete(m.id);
+            }
+          }
+          throw txError;
+        } finally {
+          this.activeBatch = null;
+        }
+      }
+
+      const results = [];
+      for (const op of operation) {
+        results.push(await op);
+      }
+      return results as unknown as T;
+    } finally {
+      release();
     }
-    const results = [];
-    for (const op of operation) {
-      results.push(await op);
-    }
-    return results as unknown as T;
   }
 }
 
