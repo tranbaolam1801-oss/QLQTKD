@@ -34,9 +34,15 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/backend ./backend
 COPY --from=builder /app/server.ts ./server.ts
 COPY --from=builder /app/database ./database
+COPY --from=builder /app/public ./public
+COPY --from=builder /app/firebase-applet-config.json ./firebase-applet-config.json
+COPY --from=builder /app/firebase-blueprint.json ./firebase-blueprint.json
+COPY --from=builder /app/firestore.rules ./firestore.rules
+COPY --from=builder /app/tsconfig*.json ./
 
 # Expose port (Cloud Run defaults to 8080)
 EXPOSE 8080
 
 # Run fullstack server
 CMD ["npx", "tsx", "server.ts"]
+

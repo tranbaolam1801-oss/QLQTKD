@@ -496,14 +496,26 @@ export class FirestoreAdapter {
 
     try {
       console.log('🔄 Đang đồng bộ dữ liệu từ Google Cloud Firestore...');
-      for (const name of collectionNames) {
-        const snap = await getDocs(collection(firestore, name));
-        const map = this.getCollectionMap(name);
-        map.clear();
-        snap.forEach((d) => {
-          map.set(d.id, d.data());
-        });
-      }
+      const fetchCollection = async (name: string) => {
+        try {
+          const timeoutPromise = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error(`Timeout loading collection ${name}`)), 8000)
+          );
+          const snap = await Promise.race([
+            getDocs(collection(firestore, name)),
+            timeoutPromise,
+          ]);
+          const map = this.getCollectionMap(name);
+          map.clear();
+          snap.forEach((d) => {
+            map.set(d.id, d.data());
+          });
+        } catch (colErr: any) {
+          console.warn(`[Firestore] Bộ dữ liệu "${name}":`, colErr.message);
+        }
+      };
+
+      await Promise.all(collectionNames.map((name) => fetchCollection(name)));
       this.initialized = true;
       console.log('✅ Đã đồng bộ thành công dữ liệu từ Google Cloud Firestore!');
     } catch (err: any) {

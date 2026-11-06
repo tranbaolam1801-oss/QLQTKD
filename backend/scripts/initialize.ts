@@ -1,7 +1,8 @@
 import 'dotenv/config';
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
-import { mockUsers, mockFacilities, mockEquipment } from '../../frontend/src/data/mockData';
+import { mockUsers, mockFacilities, mockEquipment } from '../../src/data/mockData';
+
 
 // Only add missing reference data. Never erase events or reset existing passwords.
 const prisma = new PrismaClient();

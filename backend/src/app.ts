@@ -37,7 +37,8 @@ app.get('/api/health', async (_req, res) => {
   let userCount = 0;
   let eventCount = 0;
   try {
-    const { default: prisma } = await import('./config/database');
+    const rawPrisma: any = await import('./config/database');
+    const prisma = rawPrisma.default?.default || rawPrisma.default || rawPrisma.prisma;
     userCount = await prisma.user.count();
     eventCount = await prisma.event.count();
   } catch (err: any) {
