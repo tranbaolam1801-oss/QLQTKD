@@ -44,5 +44,5 @@ COPY --from=builder /app/tsconfig*.json ./
 EXPOSE 8080
 
 # Run fullstack server
-CMD ["npx", "tsx", "server.ts"]
+CMD ["npm", "start"]
 

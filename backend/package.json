@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
+    "postbuild": "node -e \"const fs=require('fs'),cp=require('child_process'); if(!fs.existsSync('../dist/index.html')&&fs.existsSync('../package.json')){try{console.log('Building frontend from root...');cp.execSync('cd .. && npm install && npm run build:frontend',{stdio:'inherit'});}catch(e){console.warn('Frontend build note:',e.message);}} if(fs.existsSync('../dist')){try{fs.mkdirSync('dist/client',{recursive:true});cp.execSync('cp -r ../dist/* dist/client/ 2>/dev/null || true');}catch(e){}}\"",
     "start": "node dist/server.js",
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts",

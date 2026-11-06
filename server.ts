@@ -17,6 +17,10 @@ const PORT = parseInt(process.env.PORT || (isProd ? '8080' : '3000'), 10);
 const HOST = '0.0.0.0';
 
 async function startServer() {
+  if (!isProd) {
+    process.env.VITE_DEV_SERVER = 'true';
+  }
+
   const rawApp: any = await import('./backend/src/app');
   const app: any = rawApp.default?.default || rawApp.default;
 
@@ -27,13 +31,6 @@ async function startServer() {
       appType: 'spa',
     });
     app.use(vite.middlewares);
-  } else {
-    const express = (await import('express')).default;
-    const distPath = path.resolve(__dirname, 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (_req: any, res: any) => {
-      res.sendFile(path.resolve(distPath, 'index.html'));
-    });
   }
 
   const server = app.listen(PORT, HOST, () => {

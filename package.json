@@ -5,8 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "vite build && npm --prefix backend run build",
-    "start": "tsx server.ts",
+    "build": "vite build && npm --prefix backend run build && node -e \"const fs=require('fs'),cp=require('child_process'); if(fs.existsSync('dist')){fs.mkdirSync('backend/dist/client',{recursive:true});cp.execSync('cp -r dist/* backend/dist/client/ 2>/dev/null || true');}\"",
+    "build:frontend": "vite build",
+    "build:backend": "npm --prefix backend run build",
+    "start": "node backend/dist/server.js",
+    "start:fullstack": "tsx server.ts",
     "lint": "tsc -b"
   },
   "dependencies": {

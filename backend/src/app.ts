@@ -92,6 +92,46 @@ app.get('/api/migration/all-in-one.sql', (_req, res) => {
   return res.status(404).json({ error: 'Migration SQL not found' });
 });
 
+// Resolve the directory where frontend Vite production assets are located
+export function getFrontendDistPath(): string | null {
+  const candidatePaths = [
+    path.resolve(__dirname, 'client'),
+    path.resolve(__dirname, '../client'),
+    path.resolve(__dirname, '../../dist'),
+    path.resolve(__dirname, '../dist'),
+    path.resolve(process.cwd(), 'dist'),
+    path.resolve(process.cwd(), '../dist'),
+    path.resolve(process.cwd(), 'backend/dist/client'),
+    path.resolve(__dirname, '../../frontend/dist'),
+    path.resolve(process.cwd(), 'frontend/dist'),
+    path.resolve(process.cwd(), '../frontend/dist'),
+  ];
+  for (const candidate of candidatePaths) {
+    if (fs.existsSync(path.join(candidate, 'index.html'))) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+const frontendDist = getFrontendDistPath();
+if (frontendDist) {
+  app.use(express.static(frontendDist, { maxAge: '1d', index: 'index.html' }));
+}
+
+const publicCandidates = [
+  path.resolve(process.cwd(), 'public'),
+  path.resolve(process.cwd(), '../public'),
+  path.resolve(__dirname, '../../public'),
+  path.resolve(__dirname, '../public'),
+];
+for (const p of publicCandidates) {
+  if (fs.existsSync(p)) {
+    app.use(express.static(p, { maxAge: '1d' }));
+    break;
+  }
+}
+
 // API Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/events', eventRoutes);
@@ -104,6 +144,33 @@ app.use('/api/analytics', analyticsRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/handover', handoverRoutes);
 app.use('/api/users', userRoutes);
+
+// Explicit 404 for unmatched API routes - strictly returns JSON, never HTML
+app.all('/api/*', (req, res) => {
+  res.status(404).json({
+    success: false,
+    error: 'API endpoint not found',
+    path: req.originalUrl,
+  });
+});
+
+// SPA Fallback: serve index.html for all non-API GET requests (e.g., /, /login, /events, /dashboard)
+if (process.env.VITE_DEV_SERVER !== 'true') {
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api') || req.method !== 'GET') {
+      return next();
+    }
+    const dist = getFrontendDistPath();
+    if (dist) {
+      const indexPath = path.join(dist, 'index.html');
+      if (fs.existsSync(indexPath)) {
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        return res.sendFile(indexPath);
+      }
+    }
+    return next();
+  });
+}
 
 // Global Error Handler
 app.use(errorHandler);

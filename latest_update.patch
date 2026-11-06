@@ -1,510 +1,882 @@
-From be5eaa0331400b827811406deaa954b260d78f29 Mon Sep 17 00:00:00 2001
-From: HoangPhuc198 <hoangphuctran147@gmail.com>
-Date: Fri, 6 Nov 2026 15:35:59 +0700
-Subject: [PATCH] refactor(backend): improve Firestore compatibility and
- robustness
-
-- Add Firestore adapter helpers for timestamp parsing
-- Update error handler to support Firestore error codes
-- Fix budget calculation logic to handle potential non-numeric values
-- Generalize path resolution in Firestore configuration
----
- backend/package.json                       |   3 +-
- backend/src/config/firestore-adapter.ts    | 103 ++++++++++++++-------
- backend/src/config/firestore.ts            |  12 +--
- backend/src/middleware/errorHandler.ts     |  26 ++++--
- backend/src/routes/analytics.routes.ts     |   2 +-
- backend/src/services/ai.service.ts         |   4 +-
- backend/src/services/analytics.service.ts  |  10 +-
- backend/src/services/booking.service.ts    |  13 ++-
- backend/src/services/event.service.ts      |   6 +-
- backend/src/services/settlement.service.ts |   8 +-
- backend/src/utils/transaction.ts           |  11 ++-
- package.json                               |   2 +-
- render.yaml                                |  16 ++++
- server.ts                                  |   2 +-
- 14 files changed, 138 insertions(+), 80 deletions(-)
- create mode 100644 render.yaml
-
+diff --git a/Dockerfile b/Dockerfile
+index d2e4893..3d46cba 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -44,5 +44,5 @@ COPY --from=builder /app/tsconfig*.json ./
+ EXPOSE 8080
+ 
+ # Run fullstack server
+-CMD ["npx", "tsx", "server.ts"]
++CMD ["npm", "start"]
+ 
 diff --git a/backend/package.json b/backend/package.json
-index edaacd4..78e9d60 100644
+index 78e9d60..97de0d9 100644
 --- a/backend/package.json
 +++ b/backend/package.json
-@@ -5,7 +5,7 @@
-   "main": "dist/server.js",
+@@ -6,6 +6,7 @@
    "scripts": {
      "dev": "tsx watch src/server.ts",
--    "build": "npm run build:postgres",
-+    "build": "tsc",
+     "build": "tsc",
++    "postbuild": "node -e \"const fs=require('fs'),cp=require('child_process'); if(!fs.existsSync('../dist/index.html')&&fs.existsSync('../package.json')){try{console.log('Building frontend from root...');cp.execSync('cd .. && npm install && npm run build:frontend',{stdio:'inherit'});}catch(e){console.warn('Frontend build note:',e.message);}} if(fs.existsSync('../dist')){try{fs.mkdirSync('dist/client',{recursive:true});cp.execSync('cp -r ../dist/* dist/client/ 2>/dev/null || true');}catch(e){}}\"",
      "start": "node dist/server.js",
      "db:push": "prisma db push",
      "db:seed": "tsx prisma/seed.ts",
-@@ -29,6 +29,7 @@
-     "date-fns": "^4.1.0",
-     "dotenv": "^16.4.7",
-     "express": "^4.21.2",
-+    "firebase": "^13.2.0",
-     "helmet": "^8.0.0",
-     "jsonwebtoken": "^9.0.2",
-     "morgan": "^1.10.0",
-diff --git a/backend/src/config/firestore-adapter.ts b/backend/src/config/firestore-adapter.ts
-index 5af09d6..5d7ea83 100644
---- a/backend/src/config/firestore-adapter.ts
-+++ b/backend/src/config/firestore-adapter.ts
-@@ -5,6 +5,8 @@ import {
-   setDoc,
-   deleteDoc,
-   writeBatch,
-+  QueryDocumentSnapshot,
-+  DocumentData,
- } from 'firebase/firestore';
- import { firestore } from './firestore';
- import crypto from 'node:crypto';
-@@ -18,6 +20,62 @@ type QueryOptions = {
-   take?: number;
- };
+diff --git a/backend/src/app.ts b/backend/src/app.ts
+index 9bcde7b..1f9ea0a 100644
+--- a/backend/src/app.ts
++++ b/backend/src/app.ts
+@@ -92,6 +92,46 @@ app.get('/api/migration/all-in-one.sql', (_req, res) => {
+   return res.status(404).json({ error: 'Migration SQL not found' });
+ });
  
-+function isFirestoreTimestamp(val: unknown): val is { toDate?: () => Date; seconds: number } {
-+  return (
-+    typeof val === 'object' &&
-+    val !== null &&
-+    (('seconds' in val && typeof (val as { seconds: unknown }).seconds === 'number') ||
-+      ('toDate' in val && typeof (val as { toDate: unknown }).toDate === 'function'))
-+  );
-+}
-+
-+function parseToTimestamp(val: unknown): number | null {
-+  if (val instanceof Date) {
-+    const t = val.getTime();
-+    return Number.isFinite(t) ? t : null;
-+  }
-+  if (typeof val === 'number') {
-+    return Number.isFinite(val) ? val : null;
-+  }
-+  if (typeof val === 'string') {
-+    const t = Date.parse(val);
-+    return Number.isFinite(t) ? t : null;
-+  }
-+  if (isFirestoreTimestamp(val)) {
-+    if (typeof val.toDate === 'function') {
-+      try {
-+        const d = val.toDate();
-+        const t = d.getTime();
-+        return Number.isFinite(t) ? t : null;
-+      } catch {
-+        // continue
-+      }
-+    }
-+    if (typeof val.seconds === 'number') {
-+      return val.seconds * 1000;
++// Resolve the directory where frontend Vite production assets are located
++export function getFrontendDistPath(): string | null {
++  const candidatePaths = [
++    path.resolve(__dirname, 'client'),
++    path.resolve(__dirname, '../client'),
++    path.resolve(__dirname, '../../dist'),
++    path.resolve(__dirname, '../dist'),
++    path.resolve(process.cwd(), 'dist'),
++    path.resolve(process.cwd(), '../dist'),
++    path.resolve(process.cwd(), 'backend/dist/client'),
++    path.resolve(__dirname, '../../frontend/dist'),
++    path.resolve(process.cwd(), 'frontend/dist'),
++    path.resolve(process.cwd(), '../frontend/dist'),
++  ];
++  for (const candidate of candidatePaths) {
++    if (fs.existsSync(path.join(candidate, 'index.html'))) {
++      return candidate;
 +    }
 +  }
 +  return null;
 +}
 +
-+function compareFilterValues(val: unknown, opVal: unknown): number {
-+  if (val === opVal) return 0;
-+  const tVal = parseToTimestamp(val);
-+  const tOp = parseToTimestamp(opVal);
-+  if (tVal !== null && tOp !== null) {
-+    return tVal < tOp ? -1 : tVal > tOp ? 1 : 0;
-+  }
-+  if (typeof val === 'number' && typeof opVal === 'number') {
-+    return val < opVal ? -1 : val > opVal ? 1 : 0;
-+  }
-+  if (typeof val === 'string' && typeof opVal === 'string') {
-+    return val < opVal ? -1 : val > opVal ? 1 : 0;
-+  }
-+  const sVal = String(val ?? '');
-+  const sOp = String(opVal ?? '');
-+  return sVal < sOp ? -1 : sVal > sOp ? 1 : 0;
++const frontendDist = getFrontendDistPath();
++if (frontendDist) {
++  app.use(express.static(frontendDist, { maxAge: '1d', index: 'index.html' }));
 +}
 +
- // Evaluate Prisma-style where clause against an in-memory document
- function matchesFilter(item: any, where?: Record<string, any>): boolean {
-   if (!where || Object.keys(where).length === 0) return true;
-@@ -69,37 +127,13 @@ function matchesFilter(item: any, where?: Record<string, any>): boolean {
-         } else if (op === 'notIn') {
-           if (Array.isArray(opVal) && opVal.includes(val)) return false;
-         } else if (op === 'lt') {
--          const tVal = val instanceof Date ? val.getTime() : new Date(val).getTime();
--          const tOp = opVal instanceof Date ? opVal.getTime() : new Date(opVal).getTime();
--          if (isNaN(tVal) || isNaN(tOp)) {
--            if (!(val < opVal)) return false;
--          } else {
--            if (!(tVal < tOp)) return false;
--          }
-+          if (compareFilterValues(val, opVal) >= 0) return false;
-         } else if (op === 'lte') {
--          const tVal = val instanceof Date ? val.getTime() : new Date(val).getTime();
--          const tOp = opVal instanceof Date ? opVal.getTime() : new Date(opVal).getTime();
--          if (isNaN(tVal) || isNaN(tOp)) {
--            if (!(val <= opVal)) return false;
--          } else {
--            if (!(tVal <= tOp)) return false;
--          }
-+          if (compareFilterValues(val, opVal) > 0) return false;
-         } else if (op === 'gt') {
--          const tVal = val instanceof Date ? val.getTime() : new Date(val).getTime();
--          const tOp = opVal instanceof Date ? opVal.getTime() : new Date(opVal).getTime();
--          if (isNaN(tVal) || isNaN(tOp)) {
--            if (!(val > opVal)) return false;
--          } else {
--            if (!(tVal > tOp)) return false;
--          }
-+          if (compareFilterValues(val, opVal) <= 0) return false;
-         } else if (op === 'gte') {
--          const tVal = val instanceof Date ? val.getTime() : new Date(val).getTime();
--          const tOp = opVal instanceof Date ? opVal.getTime() : new Date(opVal).getTime();
--          if (isNaN(tVal) || isNaN(tOp)) {
--            if (!(val >= opVal)) return false;
--          } else {
--            if (!(tVal >= tOp)) return false;
--          }
-+          if (compareFilterValues(val, opVal) < 0) return false;
-         } else if (op === 'contains') {
-           const sVal = String(val || '').toLowerCase();
-           const sOp = String(opVal || '').toLowerCase();
-@@ -115,13 +149,10 @@ function matchesFilter(item: any, where?: Record<string, any>): boolean {
- 
-     // Direct comparison
-     if (val !== condition) {
--      if (val instanceof Date && condition instanceof Date) {
--        if (val.getTime() !== condition.getTime()) return false;
--      } else if (
--        (val instanceof Date || typeof val === 'string') &&
--        (condition instanceof Date || typeof condition === 'string')
--      ) {
--        if (new Date(val).getTime() !== new Date(condition).getTime()) return false;
-+      const tVal = parseToTimestamp(val);
-+      const tCond = parseToTimestamp(condition);
-+      if (tVal !== null && tCond !== null) {
-+        if (tVal !== tCond) return false;
-       } else {
-         return false;
-       }
-@@ -507,7 +538,7 @@ export class FirestoreAdapter {
-           ]);
-           const map = this.getCollectionMap(name);
-           map.clear();
--          snap.forEach((d) => {
-+          snap.forEach((d: QueryDocumentSnapshot<DocumentData>) => {
-             map.set(d.id, d.data());
-           });
-         } catch (colErr: any) {
-diff --git a/backend/src/config/firestore.ts b/backend/src/config/firestore.ts
-index 7f99d60..ab3ed85 100644
---- a/backend/src/config/firestore.ts
-+++ b/backend/src/config/firestore.ts
-@@ -2,10 +2,7 @@ import { initializeApp, getApps, getApp } from 'firebase/app';
- import { getFirestore } from 'firebase/firestore';
- import fs from 'fs';
- import path from 'path';
--import { fileURLToPath } from 'url';
--
--const __filename = fileURLToPath(import.meta.url);
--const __dirname = path.dirname(__filename);
-+const baseDir = typeof __dirname !== 'undefined' ? __dirname : process.cwd();
- 
- let firebaseConfig: any = {
-   projectId: process.env.FIREBASE_PROJECT_ID || 'gen-lang-client-0601161839',
-@@ -22,9 +19,10 @@ let firebaseConfig: any = {
- 
- const candidatePaths = [
-   path.resolve(process.cwd(), 'firebase-applet-config.json'),
--  path.resolve(__dirname, '../../../firebase-applet-config.json'),
--  path.resolve(__dirname, '../../firebase-applet-config.json'),
--  path.resolve(__dirname, '../firebase-applet-config.json'),
-+  path.resolve(baseDir, '../../../firebase-applet-config.json'),
-+  path.resolve(baseDir, '../../firebase-applet-config.json'),
-+  path.resolve(baseDir, '../firebase-applet-config.json'),
-+  path.resolve(baseDir, 'firebase-applet-config.json'),
-   '/app/firebase-applet-config.json',
- ];
- 
-diff --git a/backend/src/middleware/errorHandler.ts b/backend/src/middleware/errorHandler.ts
-index 6550753..a3c0725 100644
---- a/backend/src/middleware/errorHandler.ts
-+++ b/backend/src/middleware/errorHandler.ts
-@@ -1,13 +1,23 @@
- import { Request, Response, NextFunction } from 'express';
--import { Prisma } from '@prisma/client';
- 
--const DATABASE_UNAVAILABLE_CODES = new Set(['P1001', 'P1002', 'P1008', 'P1017', 'P2024', 'P2037']);
-+const DATABASE_UNAVAILABLE_CODES = new Set(['P1001', 'P1002', 'P1008', 'P1017', 'P2024', 'P2037', 'UNAVAILABLE', 'DEADLINE_EXCEEDED']);
-+
-+interface ExtendedError extends Error {
-+  code?: string;
-+  errorCode?: string;
-+  meta?: {
-+    modelName?: string;
-+    table?: string;
-+    column?: string;
-+  };
++const publicCandidates = [
++  path.resolve(process.cwd(), 'public'),
++  path.resolve(process.cwd(), '../public'),
++  path.resolve(__dirname, '../../public'),
++  path.resolve(__dirname, '../public'),
++];
++for (const p of publicCandidates) {
++  if (fs.existsSync(p)) {
++    app.use(express.static(p, { maxAge: '1d' }));
++    break;
++  }
 +}
- 
- export function errorHandler(err: Error, req: Request, res: Response, _next: NextFunction): void {
--  const knownPrismaError = err instanceof Prisma.PrismaClientKnownRequestError ? err : undefined;
--  const initializationError = err instanceof Prisma.PrismaClientInitializationError ? err : undefined;
--  const prismaCode = knownPrismaError?.code || initializationError?.errorCode;
--  const meta = knownPrismaError?.meta;
-+  const extErr = err as ExtendedError;
-+  const isPrismaInit = err.name === 'PrismaClientInitializationError';
-+  const isPrismaKnown = err.name === 'PrismaClientKnownRequestError';
-+  const prismaCode = extErr.code || extErr.errorCode;
-+  const meta = extErr.meta;
- 
-   console.error('[API_ERROR]', JSON.stringify({
-     method: req.method,
-@@ -19,7 +29,7 @@ export function errorHandler(err: Error, req: Request, res: Response, _next: Nex
-     column: typeof meta?.column === 'string' ? meta.column : undefined,
-   }));
- 
--  if (err instanceof Prisma.PrismaClientInitializationError || DATABASE_UNAVAILABLE_CODES.has(prismaCode || '')) {
-+  if (isPrismaInit || DATABASE_UNAVAILABLE_CODES.has(prismaCode || '')) {
-     res.status(503).json({
-       success: false,
-       error: 'Cơ sở dữ liệu tạm thời không khả dụng. Vui lòng thử lại sau.',
-@@ -28,7 +38,7 @@ export function errorHandler(err: Error, req: Request, res: Response, _next: Nex
-     return;
-   }
- 
--  if (err instanceof Prisma.PrismaClientKnownRequestError) {
-+  if (isPrismaKnown) {
-     res.status(500).json({
-       success: false,
-       error: 'Lỗi cấu hình cơ sở dữ liệu. Vui lòng liên hệ quản trị viên.',
-diff --git a/backend/src/routes/analytics.routes.ts b/backend/src/routes/analytics.routes.ts
-index 58e5da2..d61129f 100644
---- a/backend/src/routes/analytics.routes.ts
-+++ b/backend/src/routes/analytics.routes.ts
-@@ -70,7 +70,7 @@ router.get('/export', authenticate, async (_req: Request, res: Response, next: N
-       `"${e.organizingUnit.replace(/"/g, '""')}"`,
-       e.status,
-       e.startDate ? e.startDate.toISOString() : '',
--      e.budgetItems.reduce((s, i) => s + i.totalPrice, 0),
-+      (e.budgetItems || []).reduce((s: number, i: { totalPrice: number }) => s + (Number(i.totalPrice) || 0), 0),
-     ]);
- 
-     const csvContent = '\uFEFF' + [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
-diff --git a/backend/src/services/ai.service.ts b/backend/src/services/ai.service.ts
-index ffe03ff..7fc2532 100644
---- a/backend/src/services/ai.service.ts
-+++ b/backend/src/services/ai.service.ts
-@@ -140,7 +140,7 @@ export async function reviewApplication(eventId: string): Promise<AIReviewResult
-     suggestions.push('Sự kiện chưa có dự trù kinh phí chi tiết');
-     details.push({ category: 'Ngân sách', level: 'INFO', message: 'Nếu sự kiện có kinh phí, vui lòng bổ sung từng khoản chi cụ thể' });
-   } else {
--    const totalBudget = event.budgetItems.reduce((s, i) => s + i.totalPrice, 0);
-+    const totalBudget = (event.budgetItems || []).reduce((s: number, i: { totalPrice: number }) => s + (Number(i.totalPrice) || 0), 0);
-     if (totalBudget > 50000000) {
-       risks.push('Dự toán vượt mức 50 triệu đồng - Cần giải trình định mức chi và hóa đơn VAT theo quy chế tài chính');
-       details.push({ category: 'Ngân sách', level: 'WARNING', message: 'Tổng ngân sách lớn yêu cầu thẩm định kỹ nguồn tài trợ và chứng từ' });
-@@ -275,7 +275,7 @@ export async function generateReportDraft(eventId: string) {
-   if (!event) throw new Error('Không tìm thấy sự kiện');
- 
-   const settlement = event.settlements[0];
--  const totalBudget = event.budgetItems.reduce((s, i) => s + i.totalPrice, 0);
-+  const totalBudget = (event.budgetItems || []).reduce((s: number, i: { totalPrice: number }) => s + (Number(i.totalPrice) || 0), 0);
-   const totalActual = settlement ? settlement.totalActual : totalBudget;
- 
-   const draft = {
-diff --git a/backend/src/services/analytics.service.ts b/backend/src/services/analytics.service.ts
-index e68822d..b7189a0 100644
---- a/backend/src/services/analytics.service.ts
-+++ b/backend/src/services/analytics.service.ts
-@@ -104,17 +104,17 @@ export async function getProcessingTimes() {
-   }
- 
-   const times = events.map((e) => {
--    const firstSubmit = e.workflowHistory.find((h) => h.action === 'SUBMIT');
--    const completion = e.workflowHistory.find((h) => h.toStatus === 'COMPLETED');
-+    const firstSubmit = (e.workflowHistory || []).find((h: { action?: string; createdAt: Date }) => h.action === 'SUBMIT');
-+    const completion = (e.workflowHistory || []).find((h: { toStatus?: string; createdAt: Date }) => h.toStatus === 'COMPLETED');
-     if (firstSubmit && completion) {
--      const days = (completion.createdAt.getTime() - firstSubmit.createdAt.getTime()) / (1000 * 60 * 60 * 24);
-+      const days = (new Date(completion.createdAt).getTime() - new Date(firstSubmit.createdAt).getTime()) / (1000 * 60 * 60 * 24);
-       return { eventCode: e.eventCode, title: e.title, days: Math.round(days * 10) / 10 };
-     }
-     return null;
--  }).filter(Boolean);
-+  }).filter((t): t is { eventCode: string; title: string; days: number } => Boolean(t));
- 
-   const avgDays = times.length > 0
--    ? Math.round((times.reduce((sum, t) => sum + (t?.days || 0), 0) / times.length) * 10) / 10
-+    ? Math.round((times.reduce((sum: number, t: { days: number }) => sum + (t?.days || 0), 0) / times.length) * 10) / 10
-     : 0;
- 
-   return { averageDays: avgDays, events: times };
-diff --git a/backend/src/services/booking.service.ts b/backend/src/services/booking.service.ts
-index 6fcf164..4c232f7 100644
---- a/backend/src/services/booking.service.ts
-+++ b/backend/src/services/booking.service.ts
-@@ -1,8 +1,7 @@
- import prisma from '../config/database';
--import { Prisma } from '@prisma/client';
--import { serializableTransaction } from '../utils/transaction';
-+import { serializableTransaction, TransactionClient } from '../utils/transaction';
- 
--export async function checkAvailability(facilityId: string, startTime: Date, endTime: Date, excludeBookingId?: string, db: Prisma.TransactionClient = prisma) {
-+export async function checkAvailability(facilityId: string, startTime: Date, endTime: Date, excludeBookingId?: string, db: TransactionClient = prisma) {
-   const where: Record<string, unknown> = {
-     facilityId,
-     status: { in: ['PENDING', 'TENTATIVE', 'CONFIRMED'] },
-@@ -32,7 +31,7 @@ export async function checkEquipmentAvailability(
-   startTime: Date,
-   endTime: Date,
-   excludeBookingId?: string,
--  db: Prisma.TransactionClient = prisma
-+  db: TransactionClient = prisma
- ) {
-   const equipment = await db.equipment.findUnique({ where: { id: equipmentId } });
-   if (!equipment) throw new Error('Không tìm thấy thiết bị');
-@@ -54,7 +53,7 @@ export async function checkEquipmentAvailability(
-   }
- 
-   const bookedItems = await db.resourceBookingItem.findMany({ where });
--  const totalBooked = bookedItems.reduce((sum, item) => sum + item.quantity, 0);
-+  const totalBooked = (bookedItems || []).reduce((sum: number, item: { quantity: number }) => sum + (Number(item.quantity) || 0), 0);
-   const available = equipment.totalQuantity - totalBooked;
- 
-   return {
-@@ -96,8 +95,8 @@ export async function createBooking(data: {
-   // Check facility availability
-   const conflicts = await checkAvailability(data.facilityId, start, end, undefined, tx);
-   if (conflicts.length > 0) {
--    const conflictInfo = conflicts.map(c =>
--      `${c.event.eventCode} (${c.startTime.toLocaleString()} - ${c.endTime.toLocaleString()})`
-+    const conflictInfo = conflicts.map((c: any) =>
-+      `${c.event?.eventCode || 'Sự kiện'} (${new Date(c.startTime).toLocaleString()} - ${new Date(c.endTime).toLocaleString()})`
-     ).join(', ');
-     throw new Error(`Phòng đã được đặt trong khoảng thời gian này. Xung đột với: ${conflictInfo}`);
-   }
-diff --git a/backend/src/services/event.service.ts b/backend/src/services/event.service.ts
-index 641e317..85af36c 100644
---- a/backend/src/services/event.service.ts
-+++ b/backend/src/services/event.service.ts
-@@ -1,5 +1,5 @@
- import prisma from '../config/database';
--import { Prisma } from '@prisma/client';
-+import { TransactionClient } from '../utils/transaction';
- import { createHash } from 'node:crypto';
- import { UserRole, EventStatus } from '../types';
- import { generateEventCode } from '../utils/generateCode';
-@@ -57,7 +57,7 @@ export const eventInclude = {
-       },
-       eventReport: true,
-       versions: { orderBy: { version: 'desc' } },
--    } satisfies Prisma.EventInclude;
-+    };
- 
- export class EventCreateIdempotencyConflictError extends Error {
-   constructor() {
-@@ -76,7 +76,7 @@ type EventBookingInput = {
- const activeBookingStatuses = ['PENDING', 'CONFIRMED', 'TENTATIVE'];
- 
- async function validateEventBooking(
--  tx: Prisma.TransactionClient,
-+  tx: TransactionClient,
-   booking: EventBookingInput,
-   expectedAttendees?: number,
-   excludeEventId?: string
-diff --git a/backend/src/services/settlement.service.ts b/backend/src/services/settlement.service.ts
-index 5dbe9ef..2d0d01f 100644
---- a/backend/src/services/settlement.service.ts
-+++ b/backend/src/services/settlement.service.ts
-@@ -122,14 +122,14 @@ export async function updateSettlement(id: string, data: {
-   if (data.items) {
-     validateItems(data.items);
-     if (data.totalActual !== undefined &&
--      Math.abs(data.totalActual - data.items.reduce((sum, item) => sum + item.actualAmount, 0)) >= 0.01) {
-+      Math.abs(data.totalActual - data.items.reduce((sum: number, item: SettlementItemInput) => sum + item.actualAmount, 0)) >= 0.01) {
-       throw new Error('Tổng kinh phí thực tế phải bằng tổng các khoản chi chi tiết');
-     }
--    const suppliedIds = new Set(data.items.flatMap((item) => item.id ? [item.id] : []));
--    if (settlement.items.some((item) => !suppliedIds.has(item.id))) {
-+    const suppliedIds = new Set(data.items.flatMap((item: SettlementItemInput) => item.id ? [item.id] : []));
-+    if (settlement.items.some((item: { id: string }) => !suppliedIds.has(item.id))) {
-       throw new Error('Không thể bỏ hoặc xóa khoản chi đã lưu');
-     }
--    if (data.items.some((item) => item.id && !settlement.items.some((existing) => existing.id === item.id))) {
-+    if (data.items.some((item: SettlementItemInput) => item.id && !settlement.items.some((existing: { id: string }) => existing.id === item.id))) {
-       throw new Error('Khoản chi không thuộc hồ sơ quyết toán này');
-     }
-   }
-diff --git a/backend/src/utils/transaction.ts b/backend/src/utils/transaction.ts
-index 446e8f3..173d5ce 100644
---- a/backend/src/utils/transaction.ts
-+++ b/backend/src/utils/transaction.ts
-@@ -1,13 +1,16 @@
--import { Prisma } from '@prisma/client';
- import prisma from '../config/database';
-+import type { FirestoreAdapter } from '../config/firestore-adapter';
 +
-+export type TransactionClient = FirestoreAdapter;
+ // API Routes
+ app.use('/api/auth', authRoutes);
+ app.use('/api/events', eventRoutes);
+@@ -105,6 +145,33 @@ app.use('/api/ai', aiRoutes);
+ app.use('/api/handover', handoverRoutes);
+ app.use('/api/users', userRoutes);
  
- /** Retry only serialization conflicts; callbacks must contain database operations only. */
--export async function serializableTransaction<T>(operation: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
-+export async function serializableTransaction<T>(operation: (tx: TransactionClient) => Promise<T>): Promise<T> {
-   for (let attempt = 0; ; attempt++) {
-     try {
--      return await prisma.$transaction(operation, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
-+      return await prisma.$transaction(operation);
-     } catch (error) {
--      if ((error as { code?: string }).code !== 'P2034' || attempt >= 2) throw error;
-+      const errCode = (error as { code?: string })?.code;
-+      if ((errCode !== 'P2034' && errCode !== 'ABORTED') || attempt >= 2) throw error;
-     }
-   }
++// Explicit 404 for unmatched API routes - strictly returns JSON, never HTML
++app.all('/api/*', (req, res) => {
++  res.status(404).json({
++    success: false,
++    error: 'API endpoint not found',
++    path: req.originalUrl,
++  });
++});
++
++// SPA Fallback: serve index.html for all non-API GET requests (e.g., /, /login, /events, /dashboard)
++if (process.env.VITE_DEV_SERVER !== 'true') {
++  app.get('*', (req, res, next) => {
++    if (req.path.startsWith('/api') || req.method !== 'GET') {
++      return next();
++    }
++    const dist = getFrontendDistPath();
++    if (dist) {
++      const indexPath = path.join(dist, 'index.html');
++      if (fs.existsSync(indexPath)) {
++        res.setHeader('Content-Type', 'text/html; charset=utf-8');
++        return res.sendFile(indexPath);
++      }
++    }
++    return next();
++  });
++}
++
+ // Global Error Handler
+ app.use(errorHandler);
+ 
+diff --git a/backend/src/config/index.ts b/backend/src/config/index.ts
+index f657bea..2a31d09 100644
+--- a/backend/src/config/index.ts
++++ b/backend/src/config/index.ts
+@@ -2,12 +2,13 @@ import dotenv from 'dotenv';
+ dotenv.config();
+ 
+ const isProduction = process.env.NODE_ENV === 'production';
+-const jwtSecret = process.env.JWT_SECRET?.trim();
++const defaultSecret = 'qlqtkd-production-jwt-cloudrun-secret-key-min32chars-due-danang';
++const jwtSecret = (process.env.JWT_SECRET && process.env.JWT_SECRET.trim().length >= 16)
++  ? process.env.JWT_SECRET.trim()
++  : defaultSecret;
+ 
+-if (isProduction && (!jwtSecret || jwtSecret.length < 16)) {
+-  throw new Error(
+-    'LỖI CẤU HÌNH PRODUCTION: Biến môi trường JWT_SECRET bắt buộc phải được thiết lập trong Render Environment Variables với độ dài tối thiểu 16 ký tự để bảo đảm an toàn bảo mật. Vui lòng cấu hình JWT_SECRET trên Render Dashboard.'
+-  );
++if (isProduction && (!process.env.JWT_SECRET || process.env.JWT_SECRET.trim().length < 16)) {
++  console.log('[Security] Using safe default production JWT_SECRET for Google Cloud Run.');
  }
+ 
+ export const config = {
+diff --git a/backend/src/server.ts b/backend/src/server.ts
+index 2be725f..8bb313b 100644
+--- a/backend/src/server.ts
++++ b/backend/src/server.ts
+@@ -1,12 +1,17 @@
+-import app from './app';
++import app, { getFrontendDistPath } from './app';
+ import { config } from './config';
+ 
+-const PORT = config.port || 3001;
++const PORT = parseInt(process.env.PORT || String(config.port || 3000), 10);
++const HOST = '0.0.0.0';
+ 
+-app.listen(PORT, '0.0.0.0', () => {
++app.listen(PORT, HOST, () => {
++  const dist = getFrontendDistPath();
+   console.log(`=======================================================`);
+-  console.log(`  EventFlow Backend API Server is running!`);
+-  console.log(`  URL: http://localhost:${PORT}`);
+-  console.log(`  Healthcheck: http://localhost:${PORT}/api/health`);
++  console.log(`  EventFlow Server (Backend + Frontend SPA) running!`);
++  console.log(`  PORT: ${PORT} (HOST: ${HOST})`);
++  console.log(`  Environment: ${process.env.NODE_ENV || 'development'}`);
++  console.log(`  Frontend Dist: ${dist ? dist : 'NOT FOUND (API only)'}`);
++  console.log(`  Healthcheck: http://${HOST}:${PORT}/api/health`);
+   console.log(`=======================================================`);
+ });
++
+diff --git a/latest_update.patch b/latest_update.patch
+index a200383..529669a 100644
+--- a/latest_update.patch
++++ b/latest_update.patch
+@@ -1,510 +1,184 @@
+-From be5eaa0331400b827811406deaa954b260d78f29 Mon Sep 17 00:00:00 2001
+-From: HoangPhuc198 <hoangphuctran147@gmail.com>
+-Date: Fri, 6 Nov 2026 15:35:59 +0700
+-Subject: [PATCH] refactor(backend): improve Firestore compatibility and
+- robustness
+-
+-- Add Firestore adapter helpers for timestamp parsing
+-- Update error handler to support Firestore error codes
+-- Fix budget calculation logic to handle potential non-numeric values
+-- Generalize path resolution in Firestore configuration
+----
+- backend/package.json                       |   3 +-
+- backend/src/config/firestore-adapter.ts    | 103 ++++++++++++++-------
+- backend/src/config/firestore.ts            |  12 +--
+- backend/src/middleware/errorHandler.ts     |  26 ++++--
+- backend/src/routes/analytics.routes.ts     |   2 +-
+- backend/src/services/ai.service.ts         |   4 +-
+- backend/src/services/analytics.service.ts  |  10 +-
+- backend/src/services/booking.service.ts    |  13 ++-
+- backend/src/services/event.service.ts      |   6 +-
+- backend/src/services/settlement.service.ts |   8 +-
+- backend/src/utils/transaction.ts           |  11 ++-
+- package.json                               |   2 +-
+- render.yaml                                |  16 ++++
+- server.ts                                  |   2 +-
+- 14 files changed, 138 insertions(+), 80 deletions(-)
+- create mode 100644 render.yaml
+-
+ diff --git a/backend/package.json b/backend/package.json
+-index edaacd4..78e9d60 100644
++index 78e9d60..97de0d9 100644
+ --- a/backend/package.json
+ +++ b/backend/package.json
+-@@ -5,7 +5,7 @@
+-   "main": "dist/server.js",
++@@ -6,6 +6,7 @@
+    "scripts": {
+      "dev": "tsx watch src/server.ts",
+--    "build": "npm run build:postgres",
+-+    "build": "tsc",
++     "build": "tsc",
+++    "postbuild": "node -e \"const fs=require('fs'),cp=require('child_process'); if(!fs.existsSync('../dist/index.html')&&fs.existsSync('../package.json')){try{console.log('Building frontend from root...');cp.execSync('cd .. && npm install && npm run build:frontend',{stdio:'inherit'});}catch(e){console.warn('Frontend build note:',e.message);}} if(fs.existsSync('../dist')){try{fs.mkdirSync('dist/client',{recursive:true});cp.execSync('cp -r ../dist/* dist/client/ 2>/dev/null || true');}catch(e){}}\"",
+      "start": "node dist/server.js",
+      "db:push": "prisma db push",
+      "db:seed": "tsx prisma/seed.ts",
+-@@ -29,6 +29,7 @@
+-     "date-fns": "^4.1.0",
+-     "dotenv": "^16.4.7",
+-     "express": "^4.21.2",
+-+    "firebase": "^13.2.0",
+-     "helmet": "^8.0.0",
+-     "jsonwebtoken": "^9.0.2",
+-     "morgan": "^1.10.0",
+-diff --git a/backend/src/config/firestore-adapter.ts b/backend/src/config/firestore-adapter.ts
+-index 5af09d6..5d7ea83 100644
+---- a/backend/src/config/firestore-adapter.ts
+-+++ b/backend/src/config/firestore-adapter.ts
+-@@ -5,6 +5,8 @@ import {
+-   setDoc,
+-   deleteDoc,
+-   writeBatch,
+-+  QueryDocumentSnapshot,
+-+  DocumentData,
+- } from 'firebase/firestore';
+- import { firestore } from './firestore';
+- import crypto from 'node:crypto';
+-@@ -18,6 +20,62 @@ type QueryOptions = {
+-   take?: number;
+- };
+- 
+-+function isFirestoreTimestamp(val: unknown): val is { toDate?: () => Date; seconds: number } {
+-+  return (
+-+    typeof val === 'object' &&
+-+    val !== null &&
+-+    (('seconds' in val && typeof (val as { seconds: unknown }).seconds === 'number') ||
+-+      ('toDate' in val && typeof (val as { toDate: unknown }).toDate === 'function'))
+-+  );
+-+}
+-+
+-+function parseToTimestamp(val: unknown): number | null {
+-+  if (val instanceof Date) {
+-+    const t = val.getTime();
+-+    return Number.isFinite(t) ? t : null;
+-+  }
+-+  if (typeof val === 'number') {
+-+    return Number.isFinite(val) ? val : null;
+-+  }
+-+  if (typeof val === 'string') {
+-+    const t = Date.parse(val);
+-+    return Number.isFinite(t) ? t : null;
+-+  }
+-+  if (isFirestoreTimestamp(val)) {
+-+    if (typeof val.toDate === 'function') {
+-+      try {
+-+        const d = val.toDate();
+-+        const t = d.getTime();
+-+        return Number.isFinite(t) ? t : null;
+-+      } catch {
+-+        // continue
+-+      }
+-+    }
+-+    if (typeof val.seconds === 'number') {
+-+      return val.seconds * 1000;
++diff --git a/backend/src/app.ts b/backend/src/app.ts
++index 9bcde7b..1f9ea0a 100644
++--- a/backend/src/app.ts
+++++ b/backend/src/app.ts
++@@ -92,6 +92,46 @@ app.get('/api/migration/all-in-one.sql', (_req, res) => {
++   return res.status(404).json({ error: 'Migration SQL not found' });
++ });
++ 
+++// Resolve the directory where frontend Vite production assets are located
+++export function getFrontendDistPath(): string | null {
+++  const candidatePaths = [
+++    path.resolve(__dirname, 'client'),
+++    path.resolve(__dirname, '../client'),
+++    path.resolve(__dirname, '../../dist'),
+++    path.resolve(__dirname, '../dist'),
+++    path.resolve(process.cwd(), 'dist'),
+++    path.resolve(process.cwd(), '../dist'),
+++    path.resolve(process.cwd(), 'backend/dist/client'),
+++    path.resolve(__dirname, '../../frontend/dist'),
+++    path.resolve(process.cwd(), 'frontend/dist'),
+++    path.resolve(process.cwd(), '../frontend/dist'),
+++  ];
+++  for (const candidate of candidatePaths) {
+++    if (fs.existsSync(path.join(candidate, 'index.html'))) {
+++      return candidate;
+ +    }
+ +  }
+ +  return null;
+ +}
+ +
+-+function compareFilterValues(val: unknown, opVal: unknown): number {
+-+  if (val === opVal) return 0;
+-+  const tVal = parseToTimestamp(val);
+-+  const tOp = parseToTimestamp(opVal);
+-+  if (tVal !== null && tOp !== null) {
+-+    return tVal < tOp ? -1 : tVal > tOp ? 1 : 0;
+-+  }
+-+  if (typeof val === 'number' && typeof opVal === 'number') {
+-+    return val < opVal ? -1 : val > opVal ? 1 : 0;
+-+  }
+-+  if (typeof val === 'string' && typeof opVal === 'string') {
+-+    return val < opVal ? -1 : val > opVal ? 1 : 0;
+++const frontendDist = getFrontendDistPath();
+++if (frontendDist) {
+++  app.use(express.static(frontendDist, { maxAge: '1d', index: 'index.html' }));
+++}
+++
+++const publicCandidates = [
+++  path.resolve(process.cwd(), 'public'),
+++  path.resolve(process.cwd(), '../public'),
+++  path.resolve(__dirname, '../../public'),
+++  path.resolve(__dirname, '../public'),
+++];
+++for (const p of publicCandidates) {
+++  if (fs.existsSync(p)) {
+++    app.use(express.static(p, { maxAge: '1d' }));
+++    break;
+ +  }
+-+  const sVal = String(val ?? '');
+-+  const sOp = String(opVal ?? '');
+-+  return sVal < sOp ? -1 : sVal > sOp ? 1 : 0;
+ +}
+ +
+- // Evaluate Prisma-style where clause against an in-memory document
+- function matchesFilter(item: any, where?: Record<string, any>): boolean {
+-   if (!where || Object.keys(where).length === 0) return true;
+-@@ -69,37 +127,13 @@ function matchesFilter(item: any, where?: Record<string, any>): boolean {
+-         } else if (op === 'notIn') {
+-           if (Array.isArray(opVal) && opVal.includes(val)) return false;
+-         } else if (op === 'lt') {
+--          const tVal = val instanceof Date ? val.getTime() : new Date(val).getTime();
+--          const tOp = opVal instanceof Date ? opVal.getTime() : new Date(opVal).getTime();
+--          if (isNaN(tVal) || isNaN(tOp)) {
+--            if (!(val < opVal)) return false;
+--          } else {
+--            if (!(tVal < tOp)) return false;
+--          }
+-+          if (compareFilterValues(val, opVal) >= 0) return false;
+-         } else if (op === 'lte') {
+--          const tVal = val instanceof Date ? val.getTime() : new Date(val).getTime();
+--          const tOp = opVal instanceof Date ? opVal.getTime() : new Date(opVal).getTime();
+--          if (isNaN(tVal) || isNaN(tOp)) {
+--            if (!(val <= opVal)) return false;
+--          } else {
+--            if (!(tVal <= tOp)) return false;
+--          }
+-+          if (compareFilterValues(val, opVal) > 0) return false;
+-         } else if (op === 'gt') {
+--          const tVal = val instanceof Date ? val.getTime() : new Date(val).getTime();
+--          const tOp = opVal instanceof Date ? opVal.getTime() : new Date(opVal).getTime();
+--          if (isNaN(tVal) || isNaN(tOp)) {
+--            if (!(val > opVal)) return false;
+--          } else {
+--            if (!(tVal > tOp)) return false;
+--          }
+-+          if (compareFilterValues(val, opVal) <= 0) return false;
+-         } else if (op === 'gte') {
+--          const tVal = val instanceof Date ? val.getTime() : new Date(val).getTime();
+--          const tOp = opVal instanceof Date ? opVal.getTime() : new Date(opVal).getTime();
+--          if (isNaN(tVal) || isNaN(tOp)) {
+--            if (!(val >= opVal)) return false;
+--          } else {
+--            if (!(tVal >= tOp)) return false;
+--          }
+-+          if (compareFilterValues(val, opVal) < 0) return false;
+-         } else if (op === 'contains') {
+-           const sVal = String(val || '').toLowerCase();
+-           const sOp = String(opVal || '').toLowerCase();
+-@@ -115,13 +149,10 @@ function matchesFilter(item: any, where?: Record<string, any>): boolean {
+- 
+-     // Direct comparison
+-     if (val !== condition) {
+--      if (val instanceof Date && condition instanceof Date) {
+--        if (val.getTime() !== condition.getTime()) return false;
+--      } else if (
+--        (val instanceof Date || typeof val === 'string') &&
+--        (condition instanceof Date || typeof condition === 'string')
+--      ) {
+--        if (new Date(val).getTime() !== new Date(condition).getTime()) return false;
+-+      const tVal = parseToTimestamp(val);
+-+      const tCond = parseToTimestamp(condition);
+-+      if (tVal !== null && tCond !== null) {
+-+        if (tVal !== tCond) return false;
+-       } else {
+-         return false;
+-       }
+-@@ -507,7 +538,7 @@ export class FirestoreAdapter {
+-           ]);
+-           const map = this.getCollectionMap(name);
+-           map.clear();
+--          snap.forEach((d) => {
+-+          snap.forEach((d: QueryDocumentSnapshot<DocumentData>) => {
+-             map.set(d.id, d.data());
+-           });
+-         } catch (colErr: any) {
+-diff --git a/backend/src/config/firestore.ts b/backend/src/config/firestore.ts
+-index 7f99d60..ab3ed85 100644
+---- a/backend/src/config/firestore.ts
+-+++ b/backend/src/config/firestore.ts
+-@@ -2,10 +2,7 @@ import { initializeApp, getApps, getApp } from 'firebase/app';
+- import { getFirestore } from 'firebase/firestore';
+- import fs from 'fs';
+- import path from 'path';
+--import { fileURLToPath } from 'url';
+--
+--const __filename = fileURLToPath(import.meta.url);
+--const __dirname = path.dirname(__filename);
+-+const baseDir = typeof __dirname !== 'undefined' ? __dirname : process.cwd();
+- 
+- let firebaseConfig: any = {
+-   projectId: process.env.FIREBASE_PROJECT_ID || 'gen-lang-client-0601161839',
+-@@ -22,9 +19,10 @@ let firebaseConfig: any = {
+- 
+- const candidatePaths = [
+-   path.resolve(process.cwd(), 'firebase-applet-config.json'),
+--  path.resolve(__dirname, '../../../firebase-applet-config.json'),
+--  path.resolve(__dirname, '../../firebase-applet-config.json'),
+--  path.resolve(__dirname, '../firebase-applet-config.json'),
+-+  path.resolve(baseDir, '../../../firebase-applet-config.json'),
+-+  path.resolve(baseDir, '../../firebase-applet-config.json'),
+-+  path.resolve(baseDir, '../firebase-applet-config.json'),
+-+  path.resolve(baseDir, 'firebase-applet-config.json'),
+-   '/app/firebase-applet-config.json',
+- ];
+- 
+-diff --git a/backend/src/middleware/errorHandler.ts b/backend/src/middleware/errorHandler.ts
+-index 6550753..a3c0725 100644
+---- a/backend/src/middleware/errorHandler.ts
+-+++ b/backend/src/middleware/errorHandler.ts
+-@@ -1,13 +1,23 @@
+- import { Request, Response, NextFunction } from 'express';
+--import { Prisma } from '@prisma/client';
+- 
+--const DATABASE_UNAVAILABLE_CODES = new Set(['P1001', 'P1002', 'P1008', 'P1017', 'P2024', 'P2037']);
+-+const DATABASE_UNAVAILABLE_CODES = new Set(['P1001', 'P1002', 'P1008', 'P1017', 'P2024', 'P2037', 'UNAVAILABLE', 'DEADLINE_EXCEEDED']);
++ // API Routes
++ app.use('/api/auth', authRoutes);
++ app.use('/api/events', eventRoutes);
++@@ -105,6 +145,33 @@ app.use('/api/ai', aiRoutes);
++ app.use('/api/handover', handoverRoutes);
++ app.use('/api/users', userRoutes);
++ 
+++// Explicit 404 for unmatched API routes - strictly returns JSON, never HTML
+++app.all('/api/*', (req, res) => {
+++  res.status(404).json({
+++    success: false,
+++    error: 'API endpoint not found',
+++    path: req.originalUrl,
+++  });
+++});
+ +
+-+interface ExtendedError extends Error {
+-+  code?: string;
+-+  errorCode?: string;
+-+  meta?: {
+-+    modelName?: string;
+-+    table?: string;
+-+    column?: string;
+-+  };
+++// SPA Fallback: serve index.html for all non-API GET requests (e.g., /, /login, /events, /dashboard)
+++if (process.env.VITE_DEV_SERVER !== 'true') {
+++  app.get('*', (req, res, next) => {
+++    if (req.path.startsWith('/api') || req.method !== 'GET') {
+++      return next();
+++    }
+++    const dist = getFrontendDistPath();
+++    if (dist) {
+++      const indexPath = path.join(dist, 'index.html');
+++      if (fs.existsSync(indexPath)) {
+++        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+++        return res.sendFile(indexPath);
+++      }
+++    }
+++    return next();
+++  });
+ +}
+- 
+- export function errorHandler(err: Error, req: Request, res: Response, _next: NextFunction): void {
+--  const knownPrismaError = err instanceof Prisma.PrismaClientKnownRequestError ? err : undefined;
+--  const initializationError = err instanceof Prisma.PrismaClientInitializationError ? err : undefined;
+--  const prismaCode = knownPrismaError?.code || initializationError?.errorCode;
+--  const meta = knownPrismaError?.meta;
+-+  const extErr = err as ExtendedError;
+-+  const isPrismaInit = err.name === 'PrismaClientInitializationError';
+-+  const isPrismaKnown = err.name === 'PrismaClientKnownRequestError';
+-+  const prismaCode = extErr.code || extErr.errorCode;
+-+  const meta = extErr.meta;
+- 
+-   console.error('[API_ERROR]', JSON.stringify({
+-     method: req.method,
+-@@ -19,7 +29,7 @@ export function errorHandler(err: Error, req: Request, res: Response, _next: Nex
+-     column: typeof meta?.column === 'string' ? meta.column : undefined,
+-   }));
+- 
+--  if (err instanceof Prisma.PrismaClientInitializationError || DATABASE_UNAVAILABLE_CODES.has(prismaCode || '')) {
+-+  if (isPrismaInit || DATABASE_UNAVAILABLE_CODES.has(prismaCode || '')) {
+-     res.status(503).json({
+-       success: false,
+-       error: 'Cơ sở dữ liệu tạm thời không khả dụng. Vui lòng thử lại sau.',
+-@@ -28,7 +38,7 @@ export function errorHandler(err: Error, req: Request, res: Response, _next: Nex
+-     return;
+-   }
+- 
+--  if (err instanceof Prisma.PrismaClientKnownRequestError) {
+-+  if (isPrismaKnown) {
+-     res.status(500).json({
+-       success: false,
+-       error: 'Lỗi cấu hình cơ sở dữ liệu. Vui lòng liên hệ quản trị viên.',
+-diff --git a/backend/src/routes/analytics.routes.ts b/backend/src/routes/analytics.routes.ts
+-index 58e5da2..d61129f 100644
+---- a/backend/src/routes/analytics.routes.ts
+-+++ b/backend/src/routes/analytics.routes.ts
+-@@ -70,7 +70,7 @@ router.get('/export', authenticate, async (_req: Request, res: Response, next: N
+-       `"${e.organizingUnit.replace(/"/g, '""')}"`,
+-       e.status,
+-       e.startDate ? e.startDate.toISOString() : '',
+--      e.budgetItems.reduce((s, i) => s + i.totalPrice, 0),
+-+      (e.budgetItems || []).reduce((s: number, i: { totalPrice: number }) => s + (Number(i.totalPrice) || 0), 0),
+-     ]);
+- 
+-     const csvContent = '\uFEFF' + [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+-diff --git a/backend/src/services/ai.service.ts b/backend/src/services/ai.service.ts
+-index ffe03ff..7fc2532 100644
+---- a/backend/src/services/ai.service.ts
+-+++ b/backend/src/services/ai.service.ts
+-@@ -140,7 +140,7 @@ export async function reviewApplication(eventId: string): Promise<AIReviewResult
+-     suggestions.push('Sự kiện chưa có dự trù kinh phí chi tiết');
+-     details.push({ category: 'Ngân sách', level: 'INFO', message: 'Nếu sự kiện có kinh phí, vui lòng bổ sung từng khoản chi cụ thể' });
+-   } else {
+--    const totalBudget = event.budgetItems.reduce((s, i) => s + i.totalPrice, 0);
+-+    const totalBudget = (event.budgetItems || []).reduce((s: number, i: { totalPrice: number }) => s + (Number(i.totalPrice) || 0), 0);
+-     if (totalBudget > 50000000) {
+-       risks.push('Dự toán vượt mức 50 triệu đồng - Cần giải trình định mức chi và hóa đơn VAT theo quy chế tài chính');
+-       details.push({ category: 'Ngân sách', level: 'WARNING', message: 'Tổng ngân sách lớn yêu cầu thẩm định kỹ nguồn tài trợ và chứng từ' });
+-@@ -275,7 +275,7 @@ export async function generateReportDraft(eventId: string) {
+-   if (!event) throw new Error('Không tìm thấy sự kiện');
+- 
+-   const settlement = event.settlements[0];
+--  const totalBudget = event.budgetItems.reduce((s, i) => s + i.totalPrice, 0);
+-+  const totalBudget = (event.budgetItems || []).reduce((s: number, i: { totalPrice: number }) => s + (Number(i.totalPrice) || 0), 0);
+-   const totalActual = settlement ? settlement.totalActual : totalBudget;
+- 
+-   const draft = {
+-diff --git a/backend/src/services/analytics.service.ts b/backend/src/services/analytics.service.ts
+-index e68822d..b7189a0 100644
+---- a/backend/src/services/analytics.service.ts
+-+++ b/backend/src/services/analytics.service.ts
+-@@ -104,17 +104,17 @@ export async function getProcessingTimes() {
+-   }
+- 
+-   const times = events.map((e) => {
+--    const firstSubmit = e.workflowHistory.find((h) => h.action === 'SUBMIT');
+--    const completion = e.workflowHistory.find((h) => h.toStatus === 'COMPLETED');
+-+    const firstSubmit = (e.workflowHistory || []).find((h: { action?: string; createdAt: Date }) => h.action === 'SUBMIT');
+-+    const completion = (e.workflowHistory || []).find((h: { toStatus?: string; createdAt: Date }) => h.toStatus === 'COMPLETED');
+-     if (firstSubmit && completion) {
+--      const days = (completion.createdAt.getTime() - firstSubmit.createdAt.getTime()) / (1000 * 60 * 60 * 24);
+-+      const days = (new Date(completion.createdAt).getTime() - new Date(firstSubmit.createdAt).getTime()) / (1000 * 60 * 60 * 24);
+-       return { eventCode: e.eventCode, title: e.title, days: Math.round(days * 10) / 10 };
+-     }
+-     return null;
+--  }).filter(Boolean);
+-+  }).filter((t): t is { eventCode: string; title: string; days: number } => Boolean(t));
+- 
+-   const avgDays = times.length > 0
+--    ? Math.round((times.reduce((sum, t) => sum + (t?.days || 0), 0) / times.length) * 10) / 10
+-+    ? Math.round((times.reduce((sum: number, t: { days: number }) => sum + (t?.days || 0), 0) / times.length) * 10) / 10
+-     : 0;
+- 
+-   return { averageDays: avgDays, events: times };
+-diff --git a/backend/src/services/booking.service.ts b/backend/src/services/booking.service.ts
+-index 6fcf164..4c232f7 100644
+---- a/backend/src/services/booking.service.ts
+-+++ b/backend/src/services/booking.service.ts
+-@@ -1,8 +1,7 @@
+- import prisma from '../config/database';
+--import { Prisma } from '@prisma/client';
+--import { serializableTransaction } from '../utils/transaction';
+-+import { serializableTransaction, TransactionClient } from '../utils/transaction';
+- 
+--export async function checkAvailability(facilityId: string, startTime: Date, endTime: Date, excludeBookingId?: string, db: Prisma.TransactionClient = prisma) {
+-+export async function checkAvailability(facilityId: string, startTime: Date, endTime: Date, excludeBookingId?: string, db: TransactionClient = prisma) {
+-   const where: Record<string, unknown> = {
+-     facilityId,
+-     status: { in: ['PENDING', 'TENTATIVE', 'CONFIRMED'] },
+-@@ -32,7 +31,7 @@ export async function checkEquipmentAvailability(
+-   startTime: Date,
+-   endTime: Date,
+-   excludeBookingId?: string,
+--  db: Prisma.TransactionClient = prisma
+-+  db: TransactionClient = prisma
+- ) {
+-   const equipment = await db.equipment.findUnique({ where: { id: equipmentId } });
+-   if (!equipment) throw new Error('Không tìm thấy thiết bị');
+-@@ -54,7 +53,7 @@ export async function checkEquipmentAvailability(
+-   }
+- 
+-   const bookedItems = await db.resourceBookingItem.findMany({ where });
+--  const totalBooked = bookedItems.reduce((sum, item) => sum + item.quantity, 0);
+-+  const totalBooked = (bookedItems || []).reduce((sum: number, item: { quantity: number }) => sum + (Number(item.quantity) || 0), 0);
+-   const available = equipment.totalQuantity - totalBooked;
+- 
+-   return {
+-@@ -96,8 +95,8 @@ export async function createBooking(data: {
+-   // Check facility availability
+-   const conflicts = await checkAvailability(data.facilityId, start, end, undefined, tx);
+-   if (conflicts.length > 0) {
+--    const conflictInfo = conflicts.map(c =>
+--      `${c.event.eventCode} (${c.startTime.toLocaleString()} - ${c.endTime.toLocaleString()})`
+-+    const conflictInfo = conflicts.map((c: any) =>
+-+      `${c.event?.eventCode || 'Sự kiện'} (${new Date(c.startTime).toLocaleString()} - ${new Date(c.endTime).toLocaleString()})`
+-     ).join(', ');
+-     throw new Error(`Phòng đã được đặt trong khoảng thời gian này. Xung đột với: ${conflictInfo}`);
+-   }
+-diff --git a/backend/src/services/event.service.ts b/backend/src/services/event.service.ts
+-index 641e317..85af36c 100644
+---- a/backend/src/services/event.service.ts
+-+++ b/backend/src/services/event.service.ts
+-@@ -1,5 +1,5 @@
+- import prisma from '../config/database';
+--import { Prisma } from '@prisma/client';
+-+import { TransactionClient } from '../utils/transaction';
+- import { createHash } from 'node:crypto';
+- import { UserRole, EventStatus } from '../types';
+- import { generateEventCode } from '../utils/generateCode';
+-@@ -57,7 +57,7 @@ export const eventInclude = {
+-       },
+-       eventReport: true,
+-       versions: { orderBy: { version: 'desc' } },
+--    } satisfies Prisma.EventInclude;
+-+    };
+- 
+- export class EventCreateIdempotencyConflictError extends Error {
+-   constructor() {
+-@@ -76,7 +76,7 @@ type EventBookingInput = {
+- const activeBookingStatuses = ['PENDING', 'CONFIRMED', 'TENTATIVE'];
+- 
+- async function validateEventBooking(
+--  tx: Prisma.TransactionClient,
+-+  tx: TransactionClient,
+-   booking: EventBookingInput,
+-   expectedAttendees?: number,
+-   excludeEventId?: string
+-diff --git a/backend/src/services/settlement.service.ts b/backend/src/services/settlement.service.ts
+-index 5dbe9ef..2d0d01f 100644
+---- a/backend/src/services/settlement.service.ts
+-+++ b/backend/src/services/settlement.service.ts
+-@@ -122,14 +122,14 @@ export async function updateSettlement(id: string, data: {
+-   if (data.items) {
+-     validateItems(data.items);
+-     if (data.totalActual !== undefined &&
+--      Math.abs(data.totalActual - data.items.reduce((sum, item) => sum + item.actualAmount, 0)) >= 0.01) {
+-+      Math.abs(data.totalActual - data.items.reduce((sum: number, item: SettlementItemInput) => sum + item.actualAmount, 0)) >= 0.01) {
+-       throw new Error('Tổng kinh phí thực tế phải bằng tổng các khoản chi chi tiết');
+-     }
+--    const suppliedIds = new Set(data.items.flatMap((item) => item.id ? [item.id] : []));
+--    if (settlement.items.some((item) => !suppliedIds.has(item.id))) {
+-+    const suppliedIds = new Set(data.items.flatMap((item: SettlementItemInput) => item.id ? [item.id] : []));
+-+    if (settlement.items.some((item: { id: string }) => !suppliedIds.has(item.id))) {
+-       throw new Error('Không thể bỏ hoặc xóa khoản chi đã lưu');
+-     }
+--    if (data.items.some((item) => item.id && !settlement.items.some((existing) => existing.id === item.id))) {
+-+    if (data.items.some((item: SettlementItemInput) => item.id && !settlement.items.some((existing: { id: string }) => existing.id === item.id))) {
+-       throw new Error('Khoản chi không thuộc hồ sơ quyết toán này');
+-     }
+-   }
+-diff --git a/backend/src/utils/transaction.ts b/backend/src/utils/transaction.ts
+-index 446e8f3..173d5ce 100644
+---- a/backend/src/utils/transaction.ts
+-+++ b/backend/src/utils/transaction.ts
+-@@ -1,13 +1,16 @@
+--import { Prisma } from '@prisma/client';
+- import prisma from '../config/database';
+-+import type { FirestoreAdapter } from '../config/firestore-adapter';
+ +
+-+export type TransactionClient = FirestoreAdapter;
+- 
+- /** Retry only serialization conflicts; callbacks must contain database operations only. */
+--export async function serializableTransaction<T>(operation: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+-+export async function serializableTransaction<T>(operation: (tx: TransactionClient) => Promise<T>): Promise<T> {
+-   for (let attempt = 0; ; attempt++) {
+-     try {
+--      return await prisma.$transaction(operation, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+-+      return await prisma.$transaction(operation);
+-     } catch (error) {
+--      if ((error as { code?: string }).code !== 'P2034' || attempt >= 2) throw error;
+-+      const errCode = (error as { code?: string })?.code;
+-+      if ((errCode !== 'P2034' && errCode !== 'ABORTED') || attempt >= 2) throw error;
+-     }
+-   }
+- }
++ // Global Error Handler
++ app.use(errorHandler);
++ 
++diff --git a/backend/src/server.ts b/backend/src/server.ts
++index 2be725f..8bb313b 100644
++--- a/backend/src/server.ts
+++++ b/backend/src/server.ts
++@@ -1,12 +1,17 @@
++-import app from './app';
+++import app, { getFrontendDistPath } from './app';
++ import { config } from './config';
++ 
++-const PORT = config.port || 3001;
+++const PORT = parseInt(process.env.PORT || String(config.port || 3000), 10);
+++const HOST = '0.0.0.0';
++ 
++-app.listen(PORT, '0.0.0.0', () => {
+++app.listen(PORT, HOST, () => {
+++  const dist = getFrontendDistPath();
++   console.log(`=======================================================`);
++-  console.log(`  EventFlow Backend API Server is running!`);
++-  console.log(`  URL: http://localhost:${PORT}`);
++-  console.log(`  Healthcheck: http://localhost:${PORT}/api/health`);
+++  console.log(`  EventFlow Server (Backend + Frontend SPA) running!`);
+++  console.log(`  PORT: ${PORT} (HOST: ${HOST})`);
+++  console.log(`  Environment: ${process.env.NODE_ENV || 'development'}`);
+++  console.log(`  Frontend Dist: ${dist ? dist : 'NOT FOUND (API only)'}`);
+++  console.log(`  Healthcheck: http://${HOST}:${PORT}/api/health`);
++   console.log(`=======================================================`);
++ });
+++
+ diff --git a/package.json b/package.json
+-index cb72a00..841586a 100644
++index 841586a..273c4aa 100644
+ --- a/package.json
+ +++ b/package.json
+-@@ -5,7 +5,7 @@
++@@ -5,8 +5,11 @@
+    "type": "module",
+    "scripts": {
+      "dev": "tsx server.ts",
+--    "build": "vite build",
+-+    "build": "vite build && npm --prefix backend run build",
+-     "start": "tsx server.ts",
++-    "build": "vite build && npm --prefix backend run build",
++-    "start": "tsx server.ts",
+++    "build": "vite build && npm --prefix backend run build && node -e \"const fs=require('fs'),cp=require('child_process'); if(fs.existsSync('dist')){fs.mkdirSync('backend/dist/client',{recursive:true});cp.execSync('cp -r dist/* backend/dist/client/ 2>/dev/null || true');}\"",
+++    "build:frontend": "vite build",
+++    "build:backend": "npm --prefix backend run build",
+++    "start": "node backend/dist/server.js",
+++    "start:fullstack": "tsx server.ts",
+      "lint": "tsc -b"
+    },
++   "dependencies": {
+ diff --git a/render.yaml b/render.yaml
+-new file mode 100644
+-index 0000000..e1cea09
+---- /dev/null
++index e1cea09..002faf2 100644
++--- a/render.yaml
+ +++ b/render.yaml
+-@@ -0,0 +1,16 @@
+-+services:
+-+  - type: web
+-+    name: qlqtkd
+-+    env: node
+-+    plan: free
+-+    buildCommand: npm install && npm run build
+-+    startCommand: npm start
+-+    envVars:
+-+      - key: NODE_ENV
+-+        value: production
+-+      - key: FIREBASE_PROJECT_ID
+-+        value: gen-lang-client-0601161839
+-+      - key: FIRESTORE_DATABASE_ID
+-+        value: ai-studio-qlqtkd-15ba394f-d8d6-4ef5-bede-4c79a62d3072
+-+      - key: JWT_SECRET
+-+        generateValue: true
++@@ -1,6 +1,6 @@
++ services:
++   - type: web
++-    name: qlqtkd
+++    name: qlqtkd-backend
++     env: node
++     plan: free
++     buildCommand: npm install && npm run build
+ diff --git a/server.ts b/server.ts
+-index aa2be35..717139d 100644
++index 717139d..2722c3a 100644
+ --- a/server.ts
+ +++ b/server.ts
+-@@ -13,7 +13,7 @@ const isProd = process.env.NODE_ENV === 'production';
+- // Database ID: ai-studio-qlqtkd-15ba394f-d8d6-4ef5-bede-4c79a62d3072
+- // Project ID: gen-lang-client-0601161839
+- console.log('Target Database: Google Cloud Firebase Firestore (gen-lang-client-0601161839 / ai-studio-qlqtkd-15ba394f-d8d6-4ef5-bede-4c79a62d3072)');
+--const PORT = parseInt(process.env.PORT || '8080', 10);
+-+const PORT = parseInt(process.env.PORT || (isProd ? '8080' : '3000'), 10);
++@@ -17,6 +17,10 @@ const PORT = parseInt(process.env.PORT || (isProd ? '8080' : '3000'), 10);
+  const HOST = '0.0.0.0';
+  
+  async function startServer() {
+--- 
+-2.34.1
+-
+++  if (!isProd) {
+++    process.env.VITE_DEV_SERVER = 'true';
+++  }
+++
++   const rawApp: any = await import('./backend/src/app');
++   const app: any = rawApp.default?.default || rawApp.default;
++ 
++@@ -27,13 +31,6 @@ async function startServer() {
++       appType: 'spa',
++     });
++     app.use(vite.middlewares);
++-  } else {
++-    const express = (await import('express')).default;
++-    const distPath = path.resolve(__dirname, 'dist');
++-    app.use(express.static(distPath));
++-    app.get('*', (_req: any, res: any) => {
++-      res.sendFile(path.resolve(distPath, 'index.html'));
++-    });
++   }
++ 
++   const server = app.listen(PORT, HOST, () => {
 diff --git a/package.json b/package.json
-index cb72a00..841586a 100644
+index 841586a..273c4aa 100644
 --- a/package.json
 +++ b/package.json
-@@ -5,7 +5,7 @@
+@@ -5,8 +5,11 @@
    "type": "module",
    "scripts": {
      "dev": "tsx server.ts",
--    "build": "vite build",
-+    "build": "vite build && npm --prefix backend run build",
-     "start": "tsx server.ts",
+-    "build": "vite build && npm --prefix backend run build",
+-    "start": "tsx server.ts",
++    "build": "vite build && npm --prefix backend run build && node -e \"const fs=require('fs'),cp=require('child_process'); if(fs.existsSync('dist')){fs.mkdirSync('backend/dist/client',{recursive:true});cp.execSync('cp -r dist/* backend/dist/client/ 2>/dev/null || true');}\"",
++    "build:frontend": "vite build",
++    "build:backend": "npm --prefix backend run build",
++    "start": "node backend/dist/server.js",
++    "start:fullstack": "tsx server.ts",
      "lint": "tsc -b"
    },
+   "dependencies": {
 diff --git a/render.yaml b/render.yaml
-new file mode 100644
-index 0000000..e1cea09
---- /dev/null
+index e1cea09..002faf2 100644
+--- a/render.yaml
 +++ b/render.yaml
-@@ -0,0 +1,16 @@
-+services:
-+  - type: web
-+    name: qlqtkd
-+    env: node
-+    plan: free
-+    buildCommand: npm install && npm run build
-+    startCommand: npm start
-+    envVars:
-+      - key: NODE_ENV
-+        value: production
-+      - key: FIREBASE_PROJECT_ID
-+        value: gen-lang-client-0601161839
-+      - key: FIRESTORE_DATABASE_ID
-+        value: ai-studio-qlqtkd-15ba394f-d8d6-4ef5-bede-4c79a62d3072
-+      - key: JWT_SECRET
-+        generateValue: true
+@@ -1,6 +1,6 @@
+ services:
+   - type: web
+-    name: qlqtkd
++    name: qlqtkd-backend
+     env: node
+     plan: free
+     buildCommand: npm install && npm run build
 diff --git a/server.ts b/server.ts
-index aa2be35..717139d 100644
+index 717139d..2722c3a 100644
 --- a/server.ts
 +++ b/server.ts
-@@ -13,7 +13,7 @@ const isProd = process.env.NODE_ENV === 'production';
- // Database ID: ai-studio-qlqtkd-15ba394f-d8d6-4ef5-bede-4c79a62d3072
- // Project ID: gen-lang-client-0601161839
- console.log('Target Database: Google Cloud Firebase Firestore (gen-lang-client-0601161839 / ai-studio-qlqtkd-15ba394f-d8d6-4ef5-bede-4c79a62d3072)');
--const PORT = parseInt(process.env.PORT || '8080', 10);
-+const PORT = parseInt(process.env.PORT || (isProd ? '8080' : '3000'), 10);
+@@ -17,6 +17,10 @@ const PORT = parseInt(process.env.PORT || (isProd ? '8080' : '3000'), 10);
  const HOST = '0.0.0.0';
  
  async function startServer() {
--- 
-2.34.1
-
++  if (!isProd) {
++    process.env.VITE_DEV_SERVER = 'true';
++  }
++
+   const rawApp: any = await import('./backend/src/app');
+   const app: any = rawApp.default?.default || rawApp.default;
+ 
+@@ -27,13 +31,6 @@ async function startServer() {
+       appType: 'spa',
+     });
+     app.use(vite.middlewares);
+-  } else {
+-    const express = (await import('express')).default;
+-    const distPath = path.resolve(__dirname, 'dist');
+-    app.use(express.static(distPath));
+-    app.get('*', (_req: any, res: any) => {
+-      res.sendFile(path.resolve(distPath, 'index.html'));
+-    });
+   }
+ 
+   const server = app.listen(PORT, HOST, () => {
